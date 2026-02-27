@@ -165,6 +165,209 @@ class TestIndentation:
         assert len(end_module_line) - len(end_module_line.lstrip()) == module_indent
 
 
+class TestDirectives:
+    def test_directive_at_column_zero(self):
+        source = "subroutine foo()\n#ifdef USE_LIBINT\n  call bar()\n#endif\nend subroutine foo\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        ifdef_line = next(l for l in lines if "#ifdef" in l)
+        endif_line = next(l for l in lines if "#endif" in l)
+        assert ifdef_line == "#ifdef USE_LIBINT"
+        assert endif_line == "#endif"
+
+    def test_directive_not_mangled(self):
+        source = "#ifdef USE_LIBINT\nx = 1\n#endif\n"
+        result = fmt(source)
+        assert "#ifdef USE_LIBINT" in result
+        assert "#endif" in result
+        assert "#end if" not in result
+
+    def test_define_at_column_zero(self):
+        source = "module m\n#define MAX 100\nend module m\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        define_line = next(l for l in lines if "#define" in l)
+        assert define_line == "#define MAX 100"
+
+
+class TestKeywordParenSpacing:
+    def test_if_space_before_paren(self):
+        assert "if (a)" in fmt("if(a) x = 1")
+
+    def test_if_space_before_then(self):
+        result = fmt("if(x > 0)then\ny = 1\nend if")
+        assert "if (x > 0) then" in result
+
+    def test_elseif_space(self):
+        result = fmt("if(a)then\nx=1\nelseif(b)then\nx=2\nend if")
+        assert "elseif (b) then" in result
+
+    def test_do_while_space(self):
+        assert "do while (n > 0)" in fmt("do while(n > 0)\nend do")
+
+    def test_no_space_in_type_declaration(self):
+        assert "integer(8)" in fmt("integer(8) :: n")
+
+    def test_no_space_in_real_kind(self):
+        assert "real(8)" in fmt("real(8) :: x")
+
+    def test_no_space_in_type_variable(self):
+        assert "type(mytype)" in fmt("type(mytype) :: obj")
+
+    def test_function_result_clause_space(self):
+        result = fmt("function foo(x)result(y)\nend function foo\n")
+        assert "function foo(x) result(y)" in result
+
+    def test_result_assignment_unaffected(self):
+        # 'result' used as a variable name inside a body should not gain extra spaces
+        result = fmt("result = x + 1")
+        assert "result = x + 1" in result
+
+
+class TestSingleLineIf:
+    def test_simple_single_line_if_split(self):
+        result = fmt("if (x > 0) x = x + 1")
+        lines = result.splitlines()
+        assert lines[0] == "if (x > 0) &"
+        assert lines[1].strip() == "x = x + 1"
+
+    def test_action_indented_one_level(self):
+        result = fmt("if (x > 0) x = x + 1")
+        lines = result.splitlines()
+        assert lines[1].startswith("  ")  # one indent_width deeper than 'if'
+
+    def test_block_if_not_split(self):
+        source = "if (x > 0) then\n  y = 1\nend if\n"
+        result = fmt(source)
+        assert " &" not in result.splitlines()[0]
+
+    def test_call_action(self):
+        result = fmt("if (n == 1) call foo()")
+        assert result.splitlines()[0] == "if (n == 1) &"
+        assert "call foo()" in result.splitlines()[1]
+
+    def test_nested_parens_in_condition(self):
+        result = fmt("if (a .and. (b .or. c)) x = 1")
+        assert result.splitlines()[0] == "if (a .and. (b .or. c)) &"
+
+    def test_compact_if_without_spaces_still_split(self):
+        result = fmt("if(x>0)x=1")
+        lines = result.splitlines()
+        assert lines[0].endswith(" &")
+        assert "x = 1" in lines[1]
+
+    def test_blank_line_after_action_preserved(self):
+        # Blank line after the action must survive whether the if arrived
+        # as inline or already split with &
+        src_inline = "if (x > 0) x = 1\n\ny = 2\n"
+        src_split  = "if (x > 0) &\n  x = 1\n\ny = 2\n"
+        for src in (src_inline, src_split):
+            result = fmt(src)
+            lines = result.splitlines()
+            action_idx = next(i for i, l in enumerate(lines) if "x = 1" in l)
+            assert lines[action_idx + 1] == "", f"blank line missing in: {result!r}"
+
+
+class TestRoutineSeparation:
+    _base = (
+        "module m\ncontains\n"
+        "  subroutine foo()\n  end subroutine foo\n"
+        "{gap}"
+        "  subroutine bar()\n  end subroutine bar\n"
+        "end module m\n"
+    )
+
+    def _between(self, result: str) -> list[str]:
+        """Lines between end subroutine foo and subroutine bar."""
+        lines = result.splitlines()
+        a = next(i for i, l in enumerate(lines) if "end subroutine foo" in l)
+        b = next(i for i, l in enumerate(lines) if "subroutine bar" in l)
+        return lines[a + 1:b]
+
+    def test_one_blank_normalized_to_two(self):
+        src = self._base.format(gap="\n")
+        between = self._between(fmt(src))
+        assert between == ["", ""]
+
+    def test_three_blanks_normalized_to_two(self):
+        src = self._base.format(gap="\n\n\n")
+        between = self._between(fmt(src))
+        assert between == ["", ""]
+
+    def test_zero_blanks_normalized_to_two(self):
+        src = self._base.format(gap="")
+        between = self._between(fmt(src))
+        assert between == ["", ""]
+
+    def test_comment_gap_preserved(self):
+        src = self._base.format(gap="  ! note\n")
+        between = self._between(fmt(src))
+        # comment present: blank lines not forced
+        assert any("! note" in l for l in between)
+        assert len(between) == 1  # just the comment, no extra blanks injected
+
+    def test_pure_function_detected(self):
+        src = (
+            "module m\ncontains\n"
+            "  subroutine foo()\n  end subroutine foo\n"
+            "  pure function bar(x) result(y)\n"
+            "    real, intent(in) :: x\n    real :: y\n    y = x\n"
+            "  end function bar\n"
+            "end module m\n"
+        )
+        result = fmt(src)
+        lines = result.splitlines()
+        a = next(i for i, l in enumerate(lines) if "end subroutine foo" in l)
+        b = next(i for i, l in enumerate(lines) if "pure function bar" in l)
+        assert lines[a + 1:b] == ["", ""]
+
+
+class TestCommentIndentation:
+    def test_comment_follows_next_code_indent(self):
+        source = "subroutine foo()\n! doc\nimplicit none\nend subroutine foo\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        comment_line = next(l for l in lines if "! doc" in l)
+        implicit_line = next(l for l in lines if "implicit none" in l)
+        assert comment_line.index("!") == implicit_line.index("i")
+
+    def test_comment_before_end_dedents(self):
+        source = "if (x) then\n  y = 1\n  ! done\nend if\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        comment_line = next(l for l in lines if "! done" in l)
+        end_line = next(l for l in lines if "end if" in l)
+        assert len(comment_line) - len(comment_line.lstrip()) == \
+               len(end_line) - len(end_line.lstrip())
+
+    def test_blank_line_between_comment_and_code_preserved(self):
+        source = "! note\n\nx = 1\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        comment_idx = next(i for i, l in enumerate(lines) if "! note" in l)
+        code_idx = next(i for i, l in enumerate(lines) if "x = 1" in l)
+        assert code_idx - comment_idx == 2  # blank line between them
+
+
+class TestBlankLines:
+    def test_blank_lines_preserved(self):
+        source = "x = 1\n\ny = 2\n"
+        result = fmt(source)
+        assert "\n\n" in result
+
+    def test_multiple_blank_lines_preserved(self):
+        source = "x = 1\n\n\ny = 2\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        blank_count = sum(1 for l in lines if l.strip() == "")
+        assert blank_count >= 2
+
+    def test_blank_lines_not_added(self):
+        source = "x = 1\ny = 2\n"
+        result = fmt(source)
+        assert "\n\n" not in result
+
+
 class TestIdempotency:
     """Formatting the output of format_source should produce the same result."""
 

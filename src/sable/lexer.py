@@ -22,6 +22,7 @@ from .tokens import KEYWORDS, Token, TokenKind
 
 _TOKEN_RE = re.compile(
     r"""
+    (?P<DIRECTIVE> \#[^\n]*    )  |  # preprocessor directive (#ifdef, #endif, …)
     (?P<COMMENT>  !.*          )  |  # ! comment to end of line
     (?P<REAL>
         [0-9]+\.[0-9]*(?:[eEdD][+-]?[0-9]+)?   # 1.0  1.0e3
@@ -146,6 +147,10 @@ def tokenize(source: str) -> list[Token]:
             line_start = m.end()
             continue
 
+        if kind_name == "DIRECTIVE":
+            tokens.append(Token(TokenKind.DIRECTIVE, text, line, col))
+            continue
+
         if kind_name == "COMMENT":
             tokens.append(Token(TokenKind.COMMENT, text, line, col))
             continue
@@ -211,7 +216,16 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
             if not continued:
                 if current:
                     yield current
+                else:
+                    yield []  # blank line — preserve as empty logical line
                 current = []
+            else:
+                # End of a continuation line: the logical line is now complete.
+                # Yield it here so that a following blank NEWLINE can be yielded
+                # as an empty logical line rather than being consumed by this one.
+                if current:
+                    yield current
+                    current = []
             continued = False
         elif tok.kind == TokenKind.SEMICOLON:
             # Semicolon acts as statement separator

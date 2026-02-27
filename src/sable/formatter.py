@@ -101,6 +101,12 @@ _NO_SPACE_KINDS: frozenset[TokenKind] = frozenset({
     TokenKind.OP_POWER,    # a**b  (debatable, sable chooses no-space)
 })
 
+# Control-flow keywords that must be followed by a space before '('
+# (excludes type keywords like integer, real, type, class where 'integer(8)' is correct)
+_KEYWORD_SPACE_BEFORE_PAREN: frozenset[str] = frozenset({
+    "if", "elseif", "else if", "while", "select", "case", "where", "forall",
+})
+
 # Compound end-keyword forms
 _COMPACT_TO_SPACED: dict[str, str] = {
     "endif": "end if",
@@ -180,6 +186,15 @@ def _needs_space_before(prev: Token | None, curr: Token) -> bool:
     if prev is None:
         return False
     pk, ck = prev.kind, curr.kind
+
+    # Space between control-flow keyword and opening paren: if (cond), case (val), …
+    if ck == TokenKind.LPAREN and pk == TokenKind.KEYWORD \
+            and prev.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN:
+        return True
+
+    # Space between closing paren and keyword: ) then, ) result, …
+    if pk == TokenKind.RPAREN and ck == TokenKind.KEYWORD:
+        return True
 
     # Never space inside parens / brackets at boundary
     if pk in (TokenKind.LPAREN, TokenKind.LBRACKET):
@@ -428,6 +443,52 @@ def merge_end_keywords(tokens: list[Token], cfg: FormatConfig) -> list[Token]:
 
 
 # ---------------------------------------------------------------------------
+# Single-line if splitting
+# ---------------------------------------------------------------------------
+
+def _split_single_line_if(
+    tokens: list[Token],
+) -> tuple[list[Token], list[Token]] | None:
+    """If *tokens* form a single-line if statement, return (condition, action).
+
+    A single-line if has the form ``if (cond) action`` with no trailing ``then``.
+    Returns *None* for block-if statements and for anything that is not an if.
+    """
+    non_comment = [t for t in tokens if t.kind != TokenKind.COMMENT]
+    if not non_comment or non_comment[0].text.lower() != "if":
+        return None
+    # Block-if ends with 'then' — leave those alone
+    if non_comment[-1].text.lower() == "then":
+        return None
+    # Second non-comment token must open the condition
+    if len(non_comment) < 2 or non_comment[1].kind != TokenKind.LPAREN:
+        return None
+
+    # Walk the full token list (including comments) to find the matching ')'
+    depth = 0
+    close_idx = None
+    for i, tok in enumerate(tokens):
+        if tok.kind == TokenKind.LPAREN:
+            depth += 1
+        elif tok.kind == TokenKind.RPAREN:
+            depth -= 1
+            if depth == 0:
+                close_idx = i
+                break
+
+    if close_idx is None:
+        return None
+
+    action = tokens[close_idx + 1:]
+    # Strip leading whitespace-only tokens; if nothing remains it's just if(cond)
+    action_nc = [t for t in action if t.kind != TokenKind.COMMENT]
+    if not action_nc:
+        return None
+
+    return tokens[:close_idx + 1], action
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -452,23 +513,79 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         tok = normalise_operator(tok, cfg)
         return tok
 
+    # Buffer for comment/blank lines awaiting the indentation of the next code line.
+    # None entries represent blank lines; str entries are raw comment texts.
+    pending: list[str | None] = []
+
+    def flush_pending(indent: str) -> None:
+        for item in pending:
+            output_lines.append("" if item is None else indent + item)
+        pending.clear()
+
+    def _is_end_routine(toks: list[Token]) -> bool:
+        if not toks:
+            return False
+        first = toks[0].text.lower()
+        if first in ("end subroutine", "end function", "endsubroutine", "endfunction"):
+            return True
+        return (first == "end" and len(toks) > 1
+                and toks[1].text.lower() in ("subroutine", "function"))
+
+    def _is_start_routine(toks: list[Token]) -> bool:
+        if not toks or _is_end_routine(toks):
+            return False
+        return any(t.kind == TokenKind.KEYWORD
+                   and t.text.lower() in ("subroutine", "function")
+                   for t in toks)
+
+    last_was_end_routine = False
+
     for logical_line in iter_logical_lines(tokens):
         logical_line = merge_end_keywords(logical_line, cfg)
         normalised = [normalise(t) for t in logical_line]
 
-        # Skip completely empty logical lines (shouldn't happen normally)
-        non_comment = [t for t in normalised if t.kind != TokenKind.COMMENT]
-        if not non_comment:
-            # Preserve blank-comment lines (e.g. standalone comment)
-            if normalised:
-                output_lines.append(normalised[0].text)
-            else:
-                output_lines.append("")
+        # Preprocessor directives: flush buffer at current level, emit at column 0
+        if normalised and normalised[0].kind == TokenKind.DIRECTIVE:
+            flush_pending(tracker.indent())
+            output_lines.append(normalised[0].text)
+            last_was_end_routine = False
             continue
 
+        non_comment = [t for t in normalised if t.kind != TokenKind.COMMENT]
+        if not non_comment:
+            # Comment-only or blank line: buffer until we know the next code indent
+            pending.append(normalised[0].text if normalised else None)
+            continue
+
+        # Code line: emit buffered comments/blanks at this line's indentation level
         indent, _ = tracker.process_line(normalised)
-        physical = render_logical_line(normalised, indent, cfg)
-        output_lines.extend(physical)
+
+        # Normalise blank lines between consecutive routines to exactly two,
+        # but only when there are no comments in the gap.
+        if (last_was_end_routine
+                and _is_start_routine(non_comment)
+                and all(item is None for item in pending)):
+            pending.clear()
+            output_lines.extend(["", ""])
+        else:
+            flush_pending(indent)
+
+        split = _split_single_line_if(normalised)
+        if split is not None:
+            cond_tokens, action_tokens = split
+            cond_lines = render_logical_line(cond_tokens, indent, cfg)
+            cond_lines[-1] += " &"
+            action_indent = indent + " " * cfg.indent_width
+            action_lines = render_logical_line(action_tokens, action_indent, cfg)
+            output_lines.extend(cond_lines)
+            output_lines.extend(action_lines)
+        else:
+            physical = render_logical_line(normalised, indent, cfg)
+            output_lines.extend(physical)
+        last_was_end_routine = _is_end_routine(non_comment)
+
+    # Flush any trailing comments/blanks at the current (final) indent level
+    flush_pending(tracker.indent())
 
     result = "\n".join(output_lines)
 

@@ -51,6 +51,7 @@ class TokenKind(Enum):
     COLON_COLON = auto()    # :: (alias)
 
     # Special
+    DIRECTIVE = auto()      # # preprocessor directive (entire line)
     COMMENT = auto()        # ! ...
     NEWLINE = auto()
     CONTINUATION = auto()   # &
@@ -71,7 +72,7 @@ KEYWORDS: frozenset[str] = frozenset({
     "select", "case", "end select", "endselect",
     "function", "subroutine", "end function", "end subroutine",
     "endfunction", "endsubroutine",
-    "contains", "return", "call", "intent", "in", "out", "inout",
+    "contains", "return", "result", "call", "intent", "in", "out", "inout",
     "allocatable", "pointer", "target", "save", "parameter",
     "public", "private", "protected",
     "interface", "end interface",
