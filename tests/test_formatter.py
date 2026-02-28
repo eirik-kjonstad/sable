@@ -434,6 +434,41 @@ class TestArgListExpansion:
         assert once == twice
 
 
+class TestStringHandling:
+    """String literals must never be reformatted."""
+
+    def test_instring_continuation_preserved_single_arg(self):
+        # A string with Fortran & continuation inside must be output verbatim.
+        src = 'call log("Hello this is a string &\n&that continues on a new line")\n'
+        result = fmt(src, line_length=60)
+        assert '"Hello this is a string &' in result
+        assert "&that continues on a new line" in result
+        # The closing ) must appear on the last line, not pushed to its own line
+        # by the formatter's greedy splitter.
+        assert result.rstrip("\n").endswith('")')
+
+    def test_instring_continuation_preserved_multi_arg(self):
+        # When mixed with other args the whole statement is output verbatim.
+        src = 'call log(level, "Hello this is a string &\n&that continues")\n'
+        result = fmt(src, line_length=60)
+        assert '"Hello this is a string &' in result
+        assert "&that continues" in result
+
+    def test_instring_continuation_idempotent(self):
+        src = 'call log(level, "first part &\n&second part")\n'
+        once = fmt(src, line_length=60)
+        twice = fmt(once, line_length=60)
+        assert once == twice
+
+    def test_long_string_does_not_dominate_alignment(self):
+        # A 70-char string arg must not push & for shorter args to column 70+.
+        src = 'call log(level, "' + "x" * 70 + '")\n'
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        level_line = next(l for l in lines if "level" in l)
+        assert level_line.rindex("&") < 60
+
+
 class TestLongArgContinuation:
     """Long individual arguments inside an exploded list are split with greedy continuation."""
 

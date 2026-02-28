@@ -494,11 +494,14 @@ def _try_expand_arg_list(
             )
             content_lines.extend(split)
 
-    # Align all & markers to one column past the widest content line.
-    max_width = max(len(line) for line in content_lines)
+    # Align & markers, but only consider lines that fit within line_length.
+    # A single very long string argument must not push the alignment column
+    # to an unreasonable position for all other (short) argument lines.
+    fitting = [len(l) for l in content_lines if len(l) <= cfg.line_length - 2]
+    align_width = max(fitting) if fitting else max(len(l) for l in content_lines)
     lines: list[str] = []
     for content in content_lines:
-        padding = " " * (max_width - len(content))
+        padding = " " * max(0, align_width - len(content))
         lines.append(content + padding + " &")
 
     # Closing line: ) at original indent, with any suffix tokens (e.g. result(r))
@@ -534,6 +537,15 @@ def render_logical_line(
     comment_str = ("  " + comment.text) if comment else ""
 
     full_line = indent + line_body + comment_str
+
+    # String literals that already use Fortran in-string continuation (&\n&)
+    # are represented as STRING tokens whose text contains a newline.  We must
+    # never split or rearrange a line containing such a token: doing so would
+    # embed the formatter's own & markers inside or adjacent to the string's
+    # continuation markers, producing confusing or invalid output.  Output the
+    # whole logical line verbatim and let the embedded newlines do their job.
+    if any(tok.kind == TokenKind.STRING and "\n" in tok.text for tok in body):
+        return [full_line]
 
     if len(full_line) <= cfg.line_length:
         return [full_line]
