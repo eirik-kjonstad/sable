@@ -368,6 +368,67 @@ class TestBlankLines:
         assert "\n\n" not in result
 
 
+class TestArgListExpansion:
+    """One-argument-per-line explosion for long parenthesised argument lists."""
+
+    def test_long_call_explodes(self):
+        src = "call some_subroutine(argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        # Opening line ends with &
+        assert lines[0].startswith("call some_subroutine(") and lines[0].endswith(" &")
+        # Each argument on its own line with , and &
+        assert "argument_alpha," in lines[1] and lines[1].endswith(" &")
+        assert "argument_beta," in lines[2] and lines[2].endswith(" &")
+        assert "argument_gamma," in lines[3] and lines[3].endswith(" &")
+        # Last argument has no comma, still has &
+        assert "argument_delta" in lines[4] and lines[4].endswith(" &")
+        # Closing ) on its own line at original indent
+        assert lines[5] == ")"
+        # All & symbols are vertically aligned (same column)
+        amp_cols = [line.rindex("&") for line in lines[:5]]
+        assert len(set(amp_cols)) == 1
+
+    def test_short_call_stays_single_line(self):
+        result = fmt("call foo(a, b, c)\n")
+        assert result.strip() == "call foo(a, b, c)"
+
+    def test_single_arg_not_exploded(self):
+        # Only one argument — no comma, so explosion does not apply.
+        # The greedy splitter is used instead; no ", &" continuation lines appear.
+        src = "x = some_very_long_function_name(some_very_long_argument_name_that_makes_it_too_long)\n"
+        result = fmt(src, line_length=60)
+        assert ", &" not in result
+
+    def test_if_condition_not_exploded(self):
+        # Control-flow parens must never be exploded
+        src = "if (alpha .and. beta .and. gamma .and. delta .and. epsilon) then\n  x = 1\nend if\n"
+        result = fmt(src, line_length=40)
+        assert "( &" not in result
+
+    def test_function_definition_explodes(self):
+        src = "function compute(alpha_in, beta_in, gamma_in, delta_in) result(out)\n  out = 0.0\nend function compute\n"
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        assert lines[0].startswith("function compute(") and lines[0].endswith(" &")
+        # Closing ) with result clause at original indent, on its own line
+        close_line = next(l for l in lines if l.startswith(") result"))
+        assert close_line == ") result(out)"
+
+    def test_trailing_comment_on_close_line(self):
+        src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
+        result = fmt(src, line_length=40)
+        lines = result.splitlines()
+        # Comment goes on the closing ) line
+        assert lines[-1].startswith(")") and "! important" in lines[-1]
+
+    def test_expanded_is_idempotent(self):
+        src = "call some_subroutine(argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+        once = fmt(src, line_length=60)
+        twice = fmt(once, line_length=60)
+        assert once == twice
+
+
 class TestIdempotency:
     """Formatting the output of format_source should produce the same result."""
 

@@ -326,6 +326,128 @@ class IndentTracker:
 # Line rendering
 # ---------------------------------------------------------------------------
 
+def _render_tokens(tokens: list[Token]) -> str:
+    """Render a token list to a string, inserting spaces via the spacing rules."""
+    parts: list[str] = []
+    prev: Token | None = None
+    for tok in tokens:
+        if _needs_space_before(prev, tok):
+            parts.append(" ")
+        parts.append(tok.text)
+        prev = tok
+    return "".join(parts)
+
+
+def _find_outermost_paren_group(tokens: list[Token]) -> tuple[int, int] | None:
+    """Return (open_idx, close_idx) of the first top-level '(…)' group, or None."""
+    depth = 0
+    open_idx: int | None = None
+    for i, tok in enumerate(tokens):
+        if tok.kind == TokenKind.LPAREN:
+            if depth == 0:
+                open_idx = i
+            depth += 1
+        elif tok.kind == TokenKind.RPAREN:
+            depth -= 1
+            if depth == 0 and open_idx is not None:
+                return open_idx, i
+    return None
+
+
+def _split_at_top_commas(tokens: list[Token]) -> list[list[Token]]:
+    """Split *tokens* at top-level commas, returning one group per argument."""
+    groups: list[list[Token]] = []
+    current: list[Token] = []
+    depth = 0
+    for tok in tokens:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+            current.append(tok)
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth -= 1
+            current.append(tok)
+        elif tok.kind == TokenKind.COMMA and depth == 0:
+            groups.append(current)
+            current = []
+        else:
+            current.append(tok)
+    if current:
+        groups.append(current)
+    return groups
+
+
+def _try_expand_arg_list(
+    body: list[Token],
+    comment: Token | None,
+    indent: str,
+    cfg: FormatConfig,
+) -> list[str] | None:
+    """Try to render the line with one argument per line (Black-style explosion).
+
+    Returns a list of physical lines if the line contains a parenthesised
+    argument list with multiple arguments and is not a control-flow construct.
+    Returns *None* when expansion is not applicable.
+    """
+    paren_span = _find_outermost_paren_group(body)
+    if paren_span is None:
+        return None
+
+    open_idx, close_idx = paren_span
+    inner = body[open_idx + 1:close_idx]
+
+    # Require at least one top-level comma (two or more arguments)
+    depth = 0
+    has_top_comma = False
+    for tok in inner:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth -= 1
+        elif tok.kind == TokenKind.COMMA and depth == 0:
+            has_top_comma = True
+            break
+    if not has_top_comma:
+        return None
+
+    # Do not explode control-flow constructs: if (…), while (…), select (…), …
+    if open_idx > 0:
+        prev_tok = body[open_idx - 1]
+        if (prev_tok.kind == TokenKind.KEYWORD
+                and prev_tok.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN):
+            return None
+
+    continuation_indent = indent + " " * cfg.indent_width
+    arg_groups = _split_at_top_commas(inner)
+
+    # Build content strings for every line that carries a continuation marker:
+    #   - the opening line: prefix + (
+    #   - each argument line: arg  (with trailing comma on all but the last)
+    # The closing ) goes on its own line at the original indent level.
+    prefix_with_open = _render_tokens(body[:open_idx + 1])
+    content_lines: list[str] = [indent + prefix_with_open]
+
+    for i, arg_toks in enumerate(arg_groups):
+        arg_str = _render_tokens(arg_toks)
+        is_last = (i == len(arg_groups) - 1)
+        suffix = "" if is_last else ","
+        content_lines.append(continuation_indent + arg_str + suffix)
+
+    # Align all & markers to one column past the widest content line.
+    max_width = max(len(line) for line in content_lines)
+    lines: list[str] = []
+    for content in content_lines:
+        padding = " " * (max_width - len(content))
+        lines.append(content + padding + " &")
+
+    # Closing line: ) at original indent, with any suffix tokens (e.g. result(r))
+    # and the trailing comment (if any).
+    close_and_suffix = _render_tokens([body[close_idx]] + body[close_idx + 1:])
+    comment_str = ("  " + comment.text) if comment else ""
+    lines.append(indent + close_and_suffix + comment_str)
+
+    return lines
+
+
 def render_logical_line(
     tokens: list[Token],
     indent: str,
@@ -334,7 +456,9 @@ def render_logical_line(
     """Render a logical line (already normalised) to one or more physical lines.
 
     If the line exceeds *cfg.line_length*, continuation markers (&) are inserted.
-    Comments are always kept at the end of their line.
+    When the line contains a multi-argument parenthesised list (a call, definition,
+    or similar), the list is exploded one-argument-per-line before falling back to
+    the greedy split strategy.  Comments are always kept at the end of their line.
     """
     # Separate trailing comment (if any)
     comment: Token | None = None
@@ -344,15 +468,7 @@ def render_logical_line(
         body = tokens[:-1]
 
     # Build the token string with spacing
-    parts: list[str] = []
-    prev: Token | None = None
-    for tok in body:
-        if _needs_space_before(prev, tok):
-            parts.append(" ")
-        parts.append(tok.text)
-        prev = tok
-
-    line_body = "".join(parts)
+    line_body = _render_tokens(body)
     comment_str = ("  " + comment.text) if comment else ""
 
     full_line = indent + line_body + comment_str
@@ -360,15 +476,18 @@ def render_logical_line(
     if len(full_line) <= cfg.line_length:
         return [full_line]
 
-    # Split at a sensible point: after a comma or before a binary operator
-    # Simple greedy split strategy
+    # Try the one-argument-per-line expansion first (Black-style)
+    expanded = _try_expand_arg_list(body, comment, indent, cfg)
+    if expanded is not None:
+        return expanded
+
+    # Fall back to a greedy split: pack as many tokens per physical line as possible
     lines: list[str] = []
     remaining = list(body)
     current_indent = indent
     continuation_indent = indent + " " * cfg.indent_width
 
     while remaining:
-        # Try to fit as many tokens as possible on one physical line
         # Budget: line_length - len(current_indent) - 2 (for ' &')
         budget = cfg.line_length - len(current_indent) - 2
         parts_acc: list[str] = []
