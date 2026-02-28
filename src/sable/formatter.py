@@ -254,6 +254,12 @@ _INDENT_OPEN: frozenset[str] = frozenset({
     "select", "case",
 })
 
+# Prefix attributes that may precede `function` or `subroutine` in a
+# procedure header, e.g. `pure function f(...)` or `recursive subroutine s()`
+_PROCEDURE_PREFIXES: frozenset[str] = frozenset({
+    "pure", "recursive", "elemental", "impure", "non_recursive",
+})
+
 # Keywords that close an indentation level (decrease before rendering)
 _INDENT_CLOSE: frozenset[str] = frozenset({
     "end", "endif", "enddo", "endfunction", "endsubroutine",
@@ -319,7 +325,18 @@ class IndentTracker:
         Handles ambiguous keywords like ``type``, which can introduce either a
         type definition (``type :: name`` – block opener) or a variable
         declaration (``type(kind) :: var`` – not a block opener).
+
+        Also handles procedure prefix attributes (``pure``, ``recursive``,
+        ``elemental``, ``impure``) that may appear before ``function`` or
+        ``subroutine``, e.g. ``pure function f(x) result(y)``.
         """
+        if first in _PROCEDURE_PREFIXES:
+            # pure/recursive/elemental/… function|subroutine …
+            return any(
+                t.kind == TokenKind.KEYWORD
+                and t.text.lower() in ("function", "subroutine")
+                for t in non_comment
+            )
         if first not in _INDENT_OPEN:
             return False
         if first == "type":

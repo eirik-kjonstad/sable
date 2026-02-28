@@ -25,11 +25,13 @@ _TOKEN_RE = re.compile(
     (?P<DIRECTIVE> \#[^\n]*    )  |  # preprocessor directive (#ifdef, #endif, …)
     (?P<COMMENT>  !.*          )  |  # ! comment to end of line
     (?P<REAL>
-        [0-9]+\.[0-9]*(?:[eEdD][+-]?[0-9]+)?   # 1.0  1.0e3
-      | \.[0-9]+(?:[eEdD][+-]?[0-9]+)?          # .5   .5e-2
-      | [0-9]+[eEdD][+-]?[0-9]+                 # 1e3  (no dot)
+        (?:
+            [0-9]+\.[0-9]*(?:[eEdD][+-]?[0-9]+)?   # 1.0  1.0e3
+          | \.[0-9]+(?:[eEdD][+-]?[0-9]+)?          # .5   .5e-2
+          | [0-9]+[eEdD][+-]?[0-9]+                 # 1e3  (no dot)
+        )(?:_[A-Za-z0-9_]+)?                        # optional kind: _dp  _8
     )                          |
-    (?P<INTEGER>  [0-9]+       )  |
+    (?P<INTEGER>  [0-9]+(?:_[A-Za-z0-9_]+)?  )  |  # optional kind: _int32  _8
     (?P<STRING>
         '[^']*(?:''[^']*)*'    |  # single-quoted, '' escape
         "[^"]*(?:""[^"]*)*"       # double-quoted, "" escape
@@ -204,11 +206,49 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
             while j < len(tokens) and tokens[j].kind == TokenKind.COMMENT:
                 j += 1
             if j < len(tokens) and tokens[j].kind == TokenKind.NEWLINE:
-                continued = True
-                i = j + 1  # skip continuation & and newline
-                # Consume optional leading & on next line
-                if i < len(tokens) and tokens[i].kind == TokenKind.CONTINUATION:
-                    i += 1
+                # Check whether the *next* physical line is a comment-only
+                # line.  If so, switch to "verbatim physical-line" mode:
+                # yield each physical segment with its trailing & so that
+                # interspersed comments stay interleaved with the data they
+                # annotate rather than being hoisted above the statement.
+                next_i = j + 1
+                k = next_i
+                while k < len(tokens) and tokens[k].kind == TokenKind.COMMENT:
+                    k += 1
+                next_is_comment_only = (
+                    k > next_i
+                    and k < len(tokens)
+                    and tokens[k].kind == TokenKind.NEWLINE
+                )
+                if next_is_comment_only:
+                    # Yield the current physical segment (including the &)
+                    # then each comment-only line, then let the next content
+                    # line begin as a fresh logical line.
+                    current.append(tok)  # keep the & in this segment's tokens
+                    if current:
+                        yield current
+                    current = []
+                    i = j + 1  # skip past the newline that follows &
+                    while i < len(tokens):
+                        k = i
+                        while k < len(tokens) and tokens[k].kind == TokenKind.COMMENT:
+                            k += 1
+                        if k > i and k < len(tokens) and tokens[k].kind == TokenKind.NEWLINE:
+                            yield tokens[i:k]  # comment-only line
+                            i = k + 1
+                        else:
+                            break
+                    # Consume optional leading & on the next content line
+                    if i < len(tokens) and tokens[i].kind == TokenKind.CONTINUATION:
+                        i += 1
+                    # continued stays False: next content line starts fresh
+                else:
+                    # Normal continuation — join the next line into current
+                    continued = True
+                    i = j + 1  # skip continuation & and newline
+                    # Consume optional leading & on next line
+                    if i < len(tokens) and tokens[i].kind == TokenKind.CONTINUATION:
+                        i += 1
                 continue
             else:
                 current.append(tok)
