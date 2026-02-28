@@ -29,7 +29,7 @@ def _make_config(
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, "-V", "--version")
-@click.argument("files", nargs=-1, type=click.Path(exists=True, path_type=Path))
+@click.argument("files", nargs=-1, type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=True))
 @click.option(
     "--check",
     is_flag=True,
@@ -113,6 +113,15 @@ def main(
         no_normalize_operators=no_normalize_operators,
     )
 
+    _FORTRAN_SUFFIXES = {".f90", ".F90", ".f95", ".F95", ".f03", ".F03", ".f08", ".F08"}
+
+    def _collect(p: Path) -> list[Path]:
+        if p.is_dir():
+            return sorted(
+                f for f in p.rglob("*") if f.suffix in _FORTRAN_SUFFIXES
+            )
+        return [p]
+
     sources: list[tuple[str, Path | None]] = []
 
     if not files:
@@ -125,10 +134,10 @@ def main(
             if str(p) == "-":
                 source = sys.stdin.read()
                 path = Path(stdin_filename) if stdin_filename else None
+                sources.append((source, path))
             else:
-                source = p.read_text(encoding="utf-8")
-                path = p
-            sources.append((source, path))
+                for resolved in _collect(p):
+                    sources.append((resolved.read_text(encoding="utf-8"), resolved))
 
     any_changed = False
     exit_code = 0
