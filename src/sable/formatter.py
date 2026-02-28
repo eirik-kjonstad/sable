@@ -301,7 +301,13 @@ class IndentTracker:
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         if non_comment:
             last = non_comment[-1].text.lower()
-            if last in _INDENT_OPEN or self._is_block_opener(first, non_comment):
+            # `end …` constructs (both compact `enddo` and spaced `end do`)
+            # are pure closers.  The trailing keyword (`do`, `associate`, …)
+            # names what is being ended, NOT a new block opener.  Other
+            # closing keywords (`else`, `elseif`, `case`, `contains`)
+            # legitimately re-open via their last token (e.g. `then`).
+            can_open_via_last = not (did_close and first.startswith("end"))
+            if (can_open_via_last and last in _INDENT_OPEN) or self._is_block_opener(first, non_comment):
                 self.open()
 
         return ind, did_close
@@ -326,6 +332,25 @@ class IndentTracker:
 # ---------------------------------------------------------------------------
 # Line rendering
 # ---------------------------------------------------------------------------
+
+def _multiline_string_column(body: list[Token], indent: str) -> int:
+    """Return the column (0-based) of the opening delimiter of the first
+    multi-line STRING token found in *body*, rendered under *indent*.
+
+    This is used to align Fortran in-string continuation markers so they sit
+    directly under the opening quote character after re-indentation.
+    """
+    col = len(indent)
+    prev: Token | None = None
+    for tok in body:
+        if _needs_space_before(prev, tok):
+            col += 1
+        if tok.kind == TokenKind.STRING and "\n" in tok.text:
+            return col
+        col += len(tok.text)
+        prev = tok
+    return len(indent)
+
 
 def _render_tokens(tokens: list[Token]) -> str:
     """Render a token list to a string, inserting spaces via the spacing rules."""
@@ -542,10 +567,21 @@ def render_logical_line(
     # are represented as STRING tokens whose text contains a newline.  We must
     # never split or rearrange a line containing such a token: doing so would
     # embed the formatter's own & markers inside or adjacent to the string's
-    # continuation markers, producing confusing or invalid output.  Output the
-    # whole logical line verbatim and let the embedded newlines do their job.
+    # continuation markers, producing confusing or invalid output.
+    #
+    # However, the formatter may have changed the indentation level of the
+    # line.  The first physical line in full_line already has the correct new
+    # indent, but the continuation lines embedded inside the STRING token still
+    # carry the original source indentation.  We re-indent them so that each
+    # leading & sits directly under the opening quote character of the string.
     if any(tok.kind == TokenKind.STRING and "\n" in tok.text for tok in body):
-        return [full_line]
+        quote_col = _multiline_string_column(body, indent)
+        continuation_prefix = " " * quote_col
+        physical = full_line.split("\n")
+        adjusted = [physical[0]]
+        for seg in physical[1:]:
+            adjusted.append(continuation_prefix + seg.lstrip())
+        return adjusted
 
     if len(full_line) <= cfg.line_length:
         return [full_line]
