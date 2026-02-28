@@ -32,7 +32,7 @@ class FormatConfig:
     line_length: int = 100
     """Maximum line length before continuation is inserted."""
 
-    indent_width: int = 2
+    indent_width: int = 3
     """Spaces per indentation level."""
 
     keyword_case: str = "lower"
@@ -192,8 +192,9 @@ def _needs_space_before(prev: Token | None, curr: Token) -> bool:
             and prev.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN:
         return True
 
-    # Space between closing paren and keyword: ) then, ) result, …
-    if pk == TokenKind.RPAREN and ck == TokenKind.KEYWORD:
+    # Space between closing paren and a following identifier or keyword:
+    # ) then, ) result, if (cond) action, …
+    if pk == TokenKind.RPAREN and ck in (TokenKind.KEYWORD, TokenKind.NAME):
         return True
 
     # Never space inside parens / brackets at boundary
@@ -376,6 +377,54 @@ def _split_at_top_commas(tokens: list[Token]) -> list[list[Token]]:
     return groups
 
 
+def _greedy_split_arg(
+    arg_toks: list[Token],
+    first_indent: str,
+    cont_indent: str,
+    suffix: str,
+    cfg: FormatConfig,
+) -> list[str]:
+    """Split a long argument across multiple content lines using greedy splitting.
+
+    Each returned string is a content line *without* the trailing ' &'.
+    The *suffix* (e.g. ',') is appended only to the last line.
+    Continuation lines are placed at *cont_indent* (one level deeper than
+    *first_indent*).
+    """
+    lines: list[str] = []
+    remaining = list(arg_toks)
+    current_indent = first_indent
+
+    while remaining:
+        budget = cfg.line_length - len(current_indent) - 2  # room for ' &'
+        parts_acc: list[str] = []
+        prev: Token | None = None
+        char_count = 0
+        split_at = len(remaining)
+
+        for idx, tok in enumerate(remaining):
+            space = " " if _needs_space_before(prev, tok) else ""
+            token_str = space + tok.text
+            if char_count + len(token_str) > budget and idx > 0:
+                split_at = idx
+                break
+            parts_acc.append(token_str)
+            char_count += len(token_str)
+            prev = tok
+
+        chunk = "".join(parts_acc)
+        remaining = remaining[split_at:]
+
+        if remaining:
+            lines.append(current_indent + chunk)
+        else:
+            lines.append(current_indent + chunk + suffix)
+
+        current_indent = cont_indent
+
+    return lines if lines else [first_indent + _render_tokens(arg_toks) + suffix]
+
+
 def _try_expand_arg_list(
     body: list[Token],
     comment: Token | None,
@@ -387,6 +436,9 @@ def _try_expand_arg_list(
     Returns a list of physical lines if the line contains a parenthesised
     argument list with multiple arguments and is not a control-flow construct.
     Returns *None* when expansion is not applicable.
+
+    If an individual argument is itself too long to fit on one continuation
+    line, it is split further using greedy continuation at a deeper indent.
     """
     paren_span = _find_outermost_paren_group(body)
     if paren_span is None:
@@ -417,11 +469,12 @@ def _try_expand_arg_list(
             return None
 
     continuation_indent = indent + " " * cfg.indent_width
+    arg_continuation_indent = continuation_indent + " " * cfg.indent_width
     arg_groups = _split_at_top_commas(inner)
 
-    # Build content strings for every line that carries a continuation marker:
+    # Build content strings for every physical line that will carry a ' &'.
     #   - the opening line: prefix + (
-    #   - each argument line: arg  (with trailing comma on all but the last)
+    #   - each argument: one line if it fits, or greedy-split into several lines
     # The closing ) goes on its own line at the original indent level.
     prefix_with_open = _render_tokens(body[:open_idx + 1])
     content_lines: list[str] = [indent + prefix_with_open]
@@ -430,7 +483,16 @@ def _try_expand_arg_list(
         arg_str = _render_tokens(arg_toks)
         is_last = (i == len(arg_groups) - 1)
         suffix = "" if is_last else ","
-        content_lines.append(continuation_indent + arg_str + suffix)
+        single_line = continuation_indent + arg_str + suffix
+
+        # + 2 reserves space for the trailing ' &' that will be appended later.
+        if len(single_line) + 2 <= cfg.line_length:
+            content_lines.append(single_line)
+        else:
+            split = _greedy_split_arg(
+                arg_toks, continuation_indent, arg_continuation_indent, suffix, cfg
+            )
+            content_lines.extend(split)
 
     # Align all & markers to one column past the widest content line.
     max_width = max(len(line) for line in content_lines)
@@ -691,13 +753,19 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         split = _split_single_line_if(normalised)
         if split is not None:
-            cond_tokens, action_tokens = split
-            cond_lines = render_logical_line(cond_tokens, indent, cfg)
-            cond_lines[-1] += " &"
-            action_indent = indent + " " * cfg.indent_width
-            action_lines = render_logical_line(action_tokens, action_indent, cfg)
-            output_lines.extend(cond_lines)
-            output_lines.extend(action_lines)
+            physical = render_logical_line(normalised, indent, cfg)
+            if len(physical) == 1:
+                # Fits on one line — keep the action on the same line as the if.
+                output_lines.extend(physical)
+            else:
+                # Too long — split at the if/action boundary.
+                cond_tokens, action_tokens = split
+                cond_lines = render_logical_line(cond_tokens, indent, cfg)
+                cond_lines[-1] += " &"
+                action_indent = indent + " " * cfg.indent_width
+                action_lines = render_logical_line(action_tokens, action_indent, cfg)
+                output_lines.extend(cond_lines)
+                output_lines.extend(action_lines)
         else:
             physical = render_logical_line(normalised, indent, cfg)
             output_lines.extend(physical)

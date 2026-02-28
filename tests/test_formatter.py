@@ -225,42 +225,47 @@ class TestKeywordParenSpacing:
 
 
 class TestSingleLineIf:
-    def test_simple_single_line_if_split(self):
+    def test_short_if_stays_on_one_line(self):
+        # Fits within the default line length — no split applied.
         result = fmt("if (x > 0) x = x + 1")
+        assert result.strip() == "if (x > 0) x = x + 1"
+
+    def test_compact_if_normalised_stays_on_one_line(self):
+        # After normalisation "if(x>0)x=1" is short enough to stay on one line.
+        result = fmt("if(x>0)x=1")
+        assert result.strip() == "if (x > 0) x = 1"
+
+    def test_long_if_split_with_continuation(self):
+        # The action pushes the line over the limit — split at the if/action boundary.
+        result = fmt("if (x > 0) x = x + 1", line_length=15)
         lines = result.splitlines()
         assert lines[0] == "if (x > 0) &"
         assert lines[1].strip() == "x = x + 1"
 
     def test_action_indented_one_level(self):
-        result = fmt("if (x > 0) x = x + 1")
+        result = fmt("if (x > 0) x = x + 1", line_length=15)
         lines = result.splitlines()
-        assert lines[1].startswith("  ")  # one indent_width deeper than 'if'
+        assert lines[1].startswith("   ")  # one indent_width (3 spaces) deeper than 'if'
 
     def test_block_if_not_split(self):
         source = "if (x > 0) then\n  y = 1\nend if\n"
         result = fmt(source)
         assert " &" not in result.splitlines()[0]
 
-    def test_call_action(self):
-        result = fmt("if (n == 1) call foo()")
+    def test_call_action_long(self):
+        result = fmt("if (n == 1) call foo()", line_length=15)
         assert result.splitlines()[0] == "if (n == 1) &"
         assert "call foo()" in result.splitlines()[1]
 
-    def test_nested_parens_in_condition(self):
-        result = fmt("if (a .and. (b .or. c)) x = 1")
+    def test_nested_parens_in_condition_long(self):
+        result = fmt("if (a .and. (b .or. c)) x = 1", line_length=25)
         assert result.splitlines()[0] == "if (a .and. (b .or. c)) &"
 
-    def test_compact_if_without_spaces_still_split(self):
-        result = fmt("if(x>0)x=1")
-        lines = result.splitlines()
-        assert lines[0].endswith(" &")
-        assert "x = 1" in lines[1]
-
     def test_blank_line_after_action_preserved(self):
-        # Blank line after the action must survive whether the if arrived
-        # as inline or already split with &
+        # Blank line after the action must survive regardless of whether the if
+        # was already written in split form or as a single line.
         src_inline = "if (x > 0) x = 1\n\ny = 2\n"
-        src_split  = "if (x > 0) &\n  x = 1\n\ny = 2\n"
+        src_split  = "if (x > 0) &\n   x = 1\n\ny = 2\n"
         for src in (src_inline, src_split):
             result = fmt(src)
             lines = result.splitlines()
@@ -426,6 +431,64 @@ class TestArgListExpansion:
         src = "call some_subroutine(argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
         once = fmt(src, line_length=60)
         twice = fmt(once, line_length=60)
+        assert once == twice
+
+
+class TestLongArgContinuation:
+    """Long individual arguments inside an exploded list are split with greedy continuation."""
+
+    def test_long_arg_split_with_continuation(self):
+        # The second argument is a long expression that exceeds the line limit.
+        src = (
+            "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
+        )
+        result = fmt(src, line_length=40)
+        lines = result.splitlines()
+        # The long argument must be split across multiple lines
+        assert sum(1 for l in lines if "alpha_var" in l or "beta_var" in l
+                   or "gamma_var" in l or "delta_var" in l or "epsilon_var" in l) > 1
+        # Continuation lines for the long arg are at a deeper indent than the other args
+        arg_lines = [l for l in lines if any(
+            v in l for v in ("alpha_var", "beta_var", "gamma_var", "delta_var", "epsilon_var")
+        )]
+        indents = [len(l) - len(l.lstrip()) for l in arg_lines]
+        assert max(indents) > min(indents)  # deeper lines exist
+
+    def test_long_arg_all_lines_end_with_continuation(self):
+        src = (
+            "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
+        )
+        result = fmt(src, line_length=40)
+        lines = result.splitlines()
+        # Every line except the closing ) must end with ' &'
+        for line in lines[:-1]:
+            assert line.endswith(" &"), f"Expected ' &' at end of: {line!r}"
+
+    def test_long_arg_comma_on_last_piece(self):
+        # The comma for a split argument must appear on its final piece, not before.
+        src = (
+            "call foo(short, alpha_beta_gamma_delta + epsilon_zeta_eta_theta, other)\n"
+        )
+        result = fmt(src, line_length=40)
+        lines = result.splitlines()
+        # Find all lines containing parts of the long arg expression
+        expr_lines = [l for l in lines if any(
+            t in l for t in ("alpha_beta", "epsilon_zeta")
+        )]
+        # Only the last piece of the expression should have a comma
+        last = expr_lines[-1]
+        others = expr_lines[:-1]
+        assert "," in last
+        for line in others:
+            # Strip trailing ' &' before checking — no comma should appear there
+            assert "," not in line.rstrip(" &")
+
+    def test_long_arg_continuation_idempotent(self):
+        src = (
+            "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
+        )
+        once = fmt(src, line_length=40)
+        twice = fmt(once, line_length=40)
         assert once == twice
 
 
