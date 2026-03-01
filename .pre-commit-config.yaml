@@ -8,4 +8,4 @@ repos:
     rev: v0.12.10
     hooks:
       - id: ruff
-        args: [--fix=false]
+        args: [--no-fix]
