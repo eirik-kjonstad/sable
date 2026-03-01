@@ -321,6 +321,22 @@ _PROCEDURE_PREFIXES: frozenset[str] = frozenset(
     }
 )
 
+# Type-spec keywords that may prefix a function header, e.g.
+# `integer function f(...)` or `type(my_t) function f(...)`.
+_FUNCTION_TYPE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "integer",
+        "real",
+        "complex",
+        "logical",
+        "character",
+        "type",
+        "class",
+        "double",
+        "precision",
+    }
+)
+
 # Keywords that close an indentation level (decrease before rendering)
 _INDENT_CLOSE: frozenset[str] = frozenset(
     {
@@ -394,16 +410,21 @@ class IndentTracker:
         # Comments don't count for indent
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         if non_comment:
-            last = non_comment[-1].text.lower()
+            last_tok = non_comment[-1]
+            last = last_tok.text.lower()
             # `end …` constructs (both compact `enddo` and spaced `end do`)
             # are pure closers.  The trailing keyword (`do`, `associate`, …)
             # names what is being ended, NOT a new block opener.  Other
             # closing keywords (`else`, `elseif`, `case`, `contains`)
             # legitimately re-open via their last token (e.g. `then`).
             can_open_via_last = not (did_close and first.startswith("end"))
-            if (can_open_via_last and last in _INDENT_OPEN) or self._is_block_opener(
-                first, non_comment
-            ):
+            # A trailing opener is only needed for `if (...) then` constructs.
+            opens_via_last = (
+                can_open_via_last
+                and last_tok.kind == TokenKind.KEYWORD
+                and last == "then"
+            )
+            if opens_via_last or self._is_block_opener(first, non_comment):
                 self.open()
 
         return ind, did_close
@@ -422,7 +443,7 @@ class IndentTracker:
             and non_comment[1].kind == TokenKind.KEYWORD
         ):
             return non_comment[1].text.lower()
-        return non_comment[0].text.lower()
+        return ""
 
     @staticmethod
     def _is_labelled_continue(line_tokens: list[Token]) -> bool:
@@ -454,9 +475,34 @@ class IndentTracker:
                 and t.text.lower() in ("function", "subroutine")
                 for t in non_comment
             )
+        if first in _FUNCTION_TYPE_PREFIXES:
+            # Typed function headers: integer function f(...), type(t) function f(...)
+            function_idx: int | None = None
+            for i, tok in enumerate(non_comment):
+                if tok.kind == TokenKind.KEYWORD and tok.text.lower() == "function":
+                    function_idx = i
+                    break
+            if function_idx is not None:
+                before = non_comment[:function_idx]
+                has_decl_marker = any(t.kind == TokenKind.DOUBLE_COLON for t in before)
+                has_assignment = any(t.kind == TokenKind.OP_ASSIGN for t in before)
+                if not has_decl_marker and not has_assignment:
+                    return True
         if first not in _INDENT_OPEN:
             return False
+        if first == "module":
+            # `module procedure ...` within an interface block is a declaration,
+            # not a block opener.
+            for i, tok in enumerate(non_comment):
+                if tok.kind == TokenKind.KEYWORD and tok.text.lower() == "module":
+                    if i + 1 < len(non_comment):
+                        if non_comment[i + 1].text.lower() == "procedure":
+                            return False
+                    break
         if first == "type":
+            # `type = ...` can be a regular assignment when TYPE is a variable name.
+            if any(t.kind == TokenKind.OP_ASSIGN for t in non_comment):
+                return False
             # type(kind_param) :: var  →  variable declaration, not a block opener
             if len(non_comment) > 1 and non_comment[1].kind == TokenKind.LPAREN:
                 return False
@@ -548,6 +594,32 @@ def _avoid_percent_split(tokens: list[Token], split_at: int) -> int:
     return idx
 
 
+def _avoid_array_constructor_split(tokens: list[Token], split_at: int) -> int:
+    """Adjust *split_at* to avoid invalid splits in ``(/ ... /)`` delimiters.
+
+    Free-form Fortran array constructors use paired delimiters ``(/`` and ``/)``.
+    A continuation boundary between those two-character delimiter pairs is
+    invalid (e.g. ``( &`` then ``/ ...``). When a split would land there, prefer
+    keeping the pair together by advancing the boundary past the slash.
+    """
+    if split_at <= 0 or split_at >= len(tokens):
+        return split_at
+    left = tokens[split_at - 1].kind
+    right = tokens[split_at].kind
+    if left == TokenKind.LPAREN and right == TokenKind.OP_SLASH:
+        return split_at + 1
+    if left == TokenKind.OP_SLASH and right == TokenKind.RPAREN:
+        return split_at + 1
+    return split_at
+
+
+def _is_paren_slash_array_constructor(inner: list[Token]) -> bool:
+    """Return True when *inner* is the body of a ``(/ ... /)`` constructor."""
+    if len(inner) < 2:
+        return False
+    return inner[0].kind == TokenKind.OP_SLASH and inner[-1].kind == TokenKind.OP_SLASH
+
+
 def _greedy_split_arg(
     arg_toks: list[Token],
     first_indent: str,
@@ -581,6 +653,7 @@ def _greedy_split_arg(
             if char_count + len(token_str) > budget and idx > 0:
                 adjusted = _avoid_percent_split(remaining, idx)
                 split_at = adjusted if adjusted > 0 else idx
+                split_at = _avoid_array_constructor_split(remaining, split_at)
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
@@ -714,6 +787,11 @@ def _try_expand_arg_list(
     if not has_top_comma:
         return None
 
+    # ``(/.../)`` array constructors are not ordinary argument lists. Exploding
+    # them as "( ... )" arguments can separate "( /" across continuation lines.
+    if _is_paren_slash_array_constructor(inner):
+        return None
+
     # Do not explode control-flow constructs: if (…), while (…), select (…), …
     if open_idx > 0:
         prev_tok = body[open_idx - 1]
@@ -817,11 +895,21 @@ def render_logical_line(
         comment = tokens[-1]
         body = tokens[:-1]
 
+    force_trailing_continuation = False
+    while body and body[-1].kind == TokenKind.CONTINUATION:
+        force_trailing_continuation = True
+        body = body[:-1]
+
+    # Normalise away any leading continuation marker. Sable emits continuation
+    # markers in trailing position only.
+    while body and body[0].kind == TokenKind.CONTINUATION:
+        body = body[1:]
+
     # Build the token string with spacing
     line_body = _render_tokens(body)
     comment_str = ("  " + comment.text) if comment else ""
-
-    full_line = indent + line_body + comment_str
+    trailing = " &" if force_trailing_continuation else ""
+    full_line = indent + line_body + trailing + comment_str
 
     if len(full_line) <= cfg.line_length:
         return [full_line]
@@ -829,6 +917,8 @@ def render_logical_line(
     # Try the one-argument-per-line expansion first (Black-style)
     expanded = _try_expand_arg_list(body, comment, indent, cfg)
     if expanded is not None:
+        if force_trailing_continuation and expanded:
+            expanded[-1] = expanded[-1] + " &"
         return expanded
 
     # Fall back to a greedy split: pack as many tokens per physical line as possible
@@ -857,7 +947,8 @@ def render_logical_line(
                         lines.append(frags[-1] + " &")
                         current_indent = continuation_indent
                     else:
-                        lines.append(frags[-1] + comment_str)
+                        tail = " &" if force_trailing_continuation else ""
+                        lines.append(frags[-1] + tail + comment_str)
                         break
                     continue
 
@@ -875,6 +966,7 @@ def render_logical_line(
             if char_count + len(token_str) > budget and idx > 0:
                 adjusted = _avoid_percent_split(remaining, idx)
                 split_at = adjusted if adjusted > 0 else idx
+                split_at = _avoid_array_constructor_split(remaining, split_at)
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
@@ -896,7 +988,8 @@ def render_logical_line(
         if remaining:
             lines.append(current_indent + chunk + " &")
         else:
-            lines.append(current_indent + chunk + comment_str)
+            tail = " &" if force_trailing_continuation else ""
+            lines.append(current_indent + chunk + tail + comment_str)
 
         current_indent = continuation_indent
 

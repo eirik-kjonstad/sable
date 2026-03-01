@@ -226,6 +226,75 @@ class TestIndentation:
         assert len(contains_line) - len(contains_line.lstrip()) == module_indent
         assert len(end_module_line) - len(end_module_line.lstrip()) == module_indent
 
+    def test_module_procedure_lines_not_nested_inside_interface(self):
+        source = (
+            "interface typedef_setMolecules\n"
+            "module procedure typedef_setMolecules_4\n"
+            "module procedure typedef_setMolecules_2\n"
+            "module procedure typedef_setMolecules_1\n"
+            "end interface\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        module_proc_lines = [
+            line for line in lines if line.strip().startswith("module procedure ")
+        ]
+        assert len(module_proc_lines) == 3
+        indents = [len(line) - len(line.lstrip()) for line in module_proc_lines]
+        assert len(set(indents)) == 1
+        assert indents[0] > 0
+
+    def test_module_function_opens_block(self):
+        source = (
+            "module function f(x) result(y)\n"
+            "integer :: y\n"
+            "y = x\n"
+            "end function f\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        body_line = next(line for line in lines if line.strip() == "integer :: y")
+        assert body_line.startswith("   ")
+
+    def test_name_type_assignment_does_not_open_indent_block(self):
+        source = (
+            "if (basInfo%labelindex == 0) then\n"
+            "ICHARGE = INT(MOLECULE%ATOM(I)%charge)\n"
+            "type = basInfo%Chargeindex(ICHARGE)\n"
+            "else\n"
+            "R = basInfo%labelindex\n"
+            "type = MOLECULE%ATOM(I)%IDtype(R)\n"
+            "end if\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        type_lines = [line for line in lines if line.strip().startswith("type = ")]
+        assert len(type_lines) == 2
+        indents = [len(line) - len(line.lstrip()) for line in type_lines]
+        assert len(set(indents)) == 1
+
+    def test_declaration_trailing_type_name_does_not_open_indent_block(self):
+        source = (
+            "integer :: I, TOTCHARGE, TOTprim, TOTcont, icharge, R, set, type\n"
+            "character(len = 45) :: CC\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        assert len(lines) == 2
+        assert not lines[0].startswith(" ")
+        assert not lines[1].startswith(" ")
+
+    def test_typed_function_header_opens_block(self):
+        source = (
+            "integer function getNbasis(AOtype, intType, MOLECULE, LUPRI)\n"
+            "implicit none\n"
+            "end function getNbasis\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        implicit_line = next(line for line in lines if line.strip() == "implicit none")
+        assert implicit_line.startswith("   ")
+
 
 class TestDirectives:
     def test_directive_at_column_zero(self):
@@ -275,6 +344,120 @@ class TestDirectives:
         endif_line = next(line for line in lines if line.lstrip().startswith("#endif"))
         assert else_line == "#else"
         assert endif_line == "#endif"
+
+
+class TestContinuationWithComments:
+    def test_no_standalone_ampersand_before_comment_block_in_indented_data(self):
+        source = (
+            "subroutine s\n"
+            "   integer :: i\n"
+            "   if (i == 0) then\n"
+            "      data (((datnuc(i,j,k),i=1,5),j=1,maxiso),k=81,86) / &\n"
+            "!\n"
+            " &   208.982404E0_realk,  0.000000E0_realk,   0.500000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            "!\n"
+            "!     At:\n"
+            "!\n"
+            "   end if\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        at_idx = lines.index("   !     At:")
+        before_at = lines[:at_idx]
+        assert before_at[-1] == "   !"
+        assert before_at[-2].endswith("&")
+        assert before_at[-2].strip() != "&"
+        assert not any(line.strip() == "&" for line in before_at)
+
+    def test_no_double_ampersand_before_last_comment_block(self):
+        source = (
+            "!\n"
+            "!     Po:\n"
+            "!\n"
+            " &   208.982404E0_realk,  0.000000E0_realk,   0.500000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            "!\n"
+            "!     At:\n"
+            "!\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        at_idx = lines.index("!     At:")
+        before_at = lines[:at_idx]
+
+        assert lines[0] == "!"
+        assert lines[1] == "!     Po:"
+        assert lines[2] == "!"
+        assert any("208.982404E0_realk" in line for line in before_at)
+        assert before_at[-1] == "!"
+        assert before_at[-2].endswith("&")
+        assert before_at[-2].strip() != "&"
+        assert not any(line.strip() == "&" for line in before_at)
+
+    def test_exact_redundant_leading_ampersand_before_comment_block(self):
+        source = (
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            "!\n"
+            "!     At:\n"
+            "!\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        assert len(lines) == 4
+        assert "0.000000E0_realk" in lines[0]
+        assert lines[0].endswith("&")
+        assert not lines[0].lstrip().startswith("&")
+        assert "  !" not in lines[0]
+        assert lines[1] == "!"
+        assert lines[2] == "!     At:"
+        assert lines[3] == "!"
+
+    def test_leading_continuation_removed_after_comment_only_lines(self):
+        source = (
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            " &     0.000000E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+            "!\n"
+            "!     At:\n"
+            "!\n"
+            " &   209.987126E0_realk,  0.000000E0_realk,   0.000000E0_realk, "
+            "0.000000E0_realk,   0.000000E0_realk, &\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        data_lines = [line for line in lines if "0.000000E0_realk" in line]
+        at_line = next(line for line in lines if "209.987126E0_realk" in line)
+
+        assert len(data_lines) >= 2
+        assert data_lines[0].endswith("&")
+        assert data_lines[1].endswith("&")
+        assert not data_lines[0].lstrip().startswith("&")
+        assert not data_lines[1].lstrip().startswith("&")
+        assert not at_line.lstrip().startswith("&")
 
 
 class TestKeywordParenSpacing:
@@ -525,6 +708,15 @@ class TestArgListExpansion:
             "end if\n"
         )
         result = fmt(src, line_length=40)
+        assert "( &" not in result
+
+    def test_array_constructor_keeps_paren_slash_pairs(self):
+        src = "SETTING%SCHEME%MOM_CENTER = (/0E0_realk,0E0_realk,0E0_realk/)\n"
+        result = fmt(src, line_length=50)
+        assert "(\n/" not in result
+        assert "/\n)" not in result
+        assert "(/" in result
+        assert "/)" in result
         assert "( &" not in result
 
     def test_function_definition_explodes(self):

@@ -215,6 +215,11 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
         tok = tokens[i]
 
         if tok.kind == TokenKind.EOF:
+            if continued and not saw_continuation_content:
+                # Dangling continuation at EOF (for example a final line that
+                # ends with '&' followed only by a standalone leading '&').
+                # Preserve the marker so rendering does not silently drop it.
+                current.append(Token(TokenKind.CONTINUATION, "&", tok.line, tok.col))
             if current:
                 yield current
             return
@@ -269,6 +274,8 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                     if current:
                         yield current
                     current = []
+                    continued = False
+                    saw_continuation_content = False
                     i = j + 1  # skip past the newline that follows &
                     while i < len(tokens):
                         k = i
@@ -283,7 +290,8 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                             i = k + 1
                         else:
                             break
-                    # Consume optional leading & on the next content line
+                    # Consume optional leading '&' on the next content line.
+                    # Sable normalises continuation style to trailing markers.
                     if i < len(tokens) and tokens[i].kind == TokenKind.CONTINUATION:
                         i += 1
                     # continued stays False: next content line starts fresh
