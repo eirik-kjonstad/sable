@@ -274,7 +274,9 @@ class TestSingleLineIf:
     def test_action_indented_one_level(self):
         result = fmt("if (x > 0) x = x + 1", line_length=15)
         lines = result.splitlines()
-        assert lines[1].startswith("   ")  # one indent_width (3 spaces) deeper than 'if'
+        assert lines[1].startswith(
+            "   "
+        )  # one indent_width (3 spaces) deeper than 'if'
 
     def test_block_if_not_split(self):
         source = "if (x > 0) then\n  y = 1\nend if\n"
@@ -294,7 +296,7 @@ class TestSingleLineIf:
         # Blank line after the action must survive regardless of whether the if
         # was already written in split form or as a single line.
         src_inline = "if (x > 0) x = 1\n\ny = 2\n"
-        src_split  = "if (x > 0) &\n   x = 1\n\ny = 2\n"
+        src_split = "if (x > 0) &\n   x = 1\n\ny = 2\n"
         for src in (src_inline, src_split):
             result = fmt(src)
             lines = result.splitlines()
@@ -310,7 +312,9 @@ class TestSingleLineIf:
         )
         result = fmt(src, line_length=80)
         lines = result.splitlines()
-        converged_idx = next(i for i, l in enumerate(lines) if "converged = .TRUE." in l)
+        converged_idx = next(
+            i for i, l in enumerate(lines) if "converged = .TRUE." in l
+        )
         assert lines[converged_idx - 1].endswith(" &")
         assert lines[converged_idx].strip() == "converged = .TRUE."
         assert lines[converged_idx].startswith("   ")
@@ -330,7 +334,7 @@ class TestRoutineSeparation:
         lines = result.splitlines()
         a = next(i for i, l in enumerate(lines) if "end subroutine foo" in l)
         b = next(i for i, l in enumerate(lines) if "subroutine bar" in l)
-        return lines[a + 1:b]
+        return lines[a + 1 : b]
 
     def test_one_blank_normalized_to_two(self):
         src = self._base.format(gap="\n")
@@ -367,7 +371,7 @@ class TestRoutineSeparation:
         lines = result.splitlines()
         a = next(i for i, l in enumerate(lines) if "end subroutine foo" in l)
         b = next(i for i, l in enumerate(lines) if "pure function bar" in l)
-        assert lines[a + 1:b] == ["", ""]
+        assert lines[a + 1 : b] == ["", ""]
 
 
 class TestCommentIndentation:
@@ -385,8 +389,9 @@ class TestCommentIndentation:
         lines = result.splitlines()
         comment_line = next(l for l in lines if "! done" in l)
         end_line = next(l for l in lines if "end if" in l)
-        assert len(comment_line) - len(comment_line.lstrip()) == \
-               len(end_line) - len(end_line.lstrip())
+        assert len(comment_line) - len(comment_line.lstrip()) == len(end_line) - len(
+            end_line.lstrip()
+        )
 
     def test_blank_line_between_comment_and_code_preserved(self):
         source = "! note\n\nx = 1\n"
@@ -563,25 +568,42 @@ class TestLongArgContinuation:
 
     def test_long_arg_split_with_continuation(self):
         # The second argument is a long expression that exceeds the line limit.
-        src = (
-            "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
-        )
+        src = "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
         result = fmt(src, line_length=40)
         lines = result.splitlines()
         # The long argument must be split across multiple lines
-        assert sum(1 for l in lines if "alpha_var" in l or "beta_var" in l
-                   or "gamma_var" in l or "delta_var" in l or "epsilon_var" in l) > 1
+        assert (
+            sum(
+                1
+                for l in lines
+                if "alpha_var" in l
+                or "beta_var" in l
+                or "gamma_var" in l
+                or "delta_var" in l
+                or "epsilon_var" in l
+            )
+            > 1
+        )
         # Continuation lines for the long arg are at a deeper indent than the other args
-        arg_lines = [l for l in lines if any(
-            v in l for v in ("alpha_var", "beta_var", "gamma_var", "delta_var", "epsilon_var")
-        )]
+        arg_lines = [
+            l
+            for l in lines
+            if any(
+                v in l
+                for v in (
+                    "alpha_var",
+                    "beta_var",
+                    "gamma_var",
+                    "delta_var",
+                    "epsilon_var",
+                )
+            )
+        ]
         indents = [len(l) - len(l.lstrip()) for l in arg_lines]
         assert max(indents) > min(indents)  # deeper lines exist
 
     def test_long_arg_all_lines_end_with_continuation(self):
-        src = (
-            "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
-        )
+        src = "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
         result = fmt(src, line_length=40)
         lines = result.splitlines()
         # Every line except the closing ) must end with ' &'
@@ -596,9 +618,9 @@ class TestLongArgContinuation:
         result = fmt(src, line_length=40)
         lines = result.splitlines()
         # Find all lines containing parts of the long arg expression
-        expr_lines = [l for l in lines if any(
-            t in l for t in ("alpha_beta", "epsilon_zeta")
-        )]
+        expr_lines = [
+            l for l in lines if any(t in l for t in ("alpha_beta", "epsilon_zeta"))
+        ]
         # Only the last piece of the expression should have a comma
         last = expr_lines[-1]
         others = expr_lines[:-1]
@@ -608,9 +630,7 @@ class TestLongArgContinuation:
             assert "," not in line.rstrip(" &")
 
     def test_long_arg_continuation_idempotent(self):
-        src = (
-            "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
-        )
+        src = "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
         once = fmt(src, line_length=40)
         twice = fmt(once, line_length=40)
         assert once == twice
@@ -625,7 +645,9 @@ class TestStringSplittingInArgList:
         lines = result.splitlines()
         assert all(len(line) <= 60 for line in lines)
         # In-string continuation: a line ends with bare & (no space before it)
-        assert any(l.rstrip().endswith("&") and not l.rstrip().endswith(" &") for l in lines)
+        assert any(
+            l.rstrip().endswith("&") and not l.rstrip().endswith(" &") for l in lines
+        )
 
     def test_long_string_arg_idempotent(self):
         src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', other)\n"

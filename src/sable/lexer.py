@@ -165,7 +165,9 @@ def tokenize(source: str) -> list[Token]:
         if kind_name == "NAME":
             lower = text.lower()
             kind = TokenKind.KEYWORD if lower in KEYWORDS else TokenKind.NAME
-            tokens.append(Token(kind, lower if kind == TokenKind.KEYWORD else text, line, col))
+            tokens.append(
+                Token(kind, lower if kind == TokenKind.KEYWORD else text, line, col)
+            )
             continue
 
         if kind_name == "STRING":
@@ -219,11 +221,7 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
 
         if tok.kind == TokenKind.CONTINUATION:
             # Leading continuation marker on a continued physical line.
-            if (
-                continued
-                and i > 0
-                and tokens[i - 1].kind == TokenKind.NEWLINE
-            ):
+            if continued and i > 0 and tokens[i - 1].kind == TokenKind.NEWLINE:
                 i += 1
                 continue
 
@@ -260,7 +258,11 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                         k = i
                         while k < len(tokens) and tokens[k].kind == TokenKind.COMMENT:
                             k += 1
-                        if k > i and k < len(tokens) and tokens[k].kind == TokenKind.NEWLINE:
+                        if (
+                            k > i
+                            and k < len(tokens)
+                            and tokens[k].kind == TokenKind.NEWLINE
+                        ):
                             yield tokens[i:k]  # comment-only line
                             i = k + 1
                         else:

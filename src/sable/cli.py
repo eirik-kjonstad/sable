@@ -12,13 +12,15 @@ from .formatter import DEFAULT_CONFIG, FormatConfig, format_source
 
 # ── Output helpers ────────────────────────────────────────────────────────────
 
+
 def _sym(char: str, **style) -> str:
     return click.style(char, **style)
 
-SYM_OK      = _sym("✓", fg="green")
+
+SYM_OK = _sym("✓", fg="green")
 SYM_CHANGED = _sym("◆", fg="yellow", bold=True)
-SYM_SKIP    = _sym("~", fg="yellow")
-SYM_ERR     = _sym("✗", fg="red", bold=True)
+SYM_SKIP = _sym("~", fg="yellow")
+SYM_ERR = _sym("✗", fg="red", bold=True)
 
 
 def _fmt_label(label: str) -> str:
@@ -30,37 +32,51 @@ def _summary(n_changed: int, n_unchanged: int, n_errors: int, check: bool) -> st
 
     if check:
         if n_changed:
-            parts.append(click.style(
-                f"{n_changed} file{'s' if n_changed != 1 else ''} would be reformatted",
-                fg="yellow", bold=True,
-            ))
+            parts.append(
+                click.style(
+                    f"{n_changed} file{'s' if n_changed != 1 else ''} would be reformatted",
+                    fg="yellow",
+                    bold=True,
+                )
+            )
         if n_unchanged:
-            parts.append(click.style(
-                f"{n_unchanged} already formatted",
-                fg="green",
-            ))
+            parts.append(
+                click.style(
+                    f"{n_unchanged} already formatted",
+                    fg="green",
+                )
+            )
     else:
         if n_changed:
-            parts.append(click.style(
-                f"{n_changed} file{'s' if n_changed != 1 else ''} reformatted",
-                fg="yellow", bold=True,
-            ))
+            parts.append(
+                click.style(
+                    f"{n_changed} file{'s' if n_changed != 1 else ''} reformatted",
+                    fg="yellow",
+                    bold=True,
+                )
+            )
         if n_unchanged:
-            parts.append(click.style(
-                f"{n_unchanged} unchanged",
-                fg="green",
-            ))
+            parts.append(
+                click.style(
+                    f"{n_unchanged} unchanged",
+                    fg="green",
+                )
+            )
 
     if n_errors:
-        parts.append(click.style(
-            f"{n_errors} error{'s' if n_errors != 1 else ''}",
-            fg="red", bold=True,
-        ))
+        parts.append(
+            click.style(
+                f"{n_errors} error{'s' if n_errors != 1 else ''}",
+                fg="red",
+                bold=True,
+            )
+        )
 
     return ", ".join(parts) + "."
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
+
 
 def _make_config(
     line_length: int,
@@ -80,9 +96,14 @@ def _make_config(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, "-V", "--version")
-@click.argument("files", nargs=-1, type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=True))
+@click.argument(
+    "files",
+    nargs=-1,
+    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=True),
+)
 @click.option(
     "--check",
     is_flag=True,
@@ -170,9 +191,7 @@ def main(
 
     def _collect(p: Path) -> list[Path]:
         if p.is_dir():
-            return sorted(
-                f for f in p.rglob("*") if f.suffix in _FORTRAN_SUFFIXES
-            )
+            return sorted(f for f in p.rglob("*") if f.suffix in _FORTRAN_SUFFIXES)
         return [p]
 
     sources: list[tuple[str, Path | None]] = []
@@ -211,6 +230,7 @@ def main(
         if diff:
             if changed:
                 import difflib
+
                 original_lines = source.splitlines(keepends=True)
                 formatted_lines = formatted.splitlines(keepends=True)
                 delta = difflib.unified_diff(
@@ -243,8 +263,10 @@ def main(
 
     if not diff and not stdin_mode and (n_changed + n_unchanged + n_errors) > 0:
         click.echo()
-        click.echo(click.style("All done! ", fg="cyan", bold=True) +
-                   _summary(n_changed, n_unchanged, n_errors, check))
+        click.echo(
+            click.style("All done! ", fg="cyan", bold=True)
+            + _summary(n_changed, n_unchanged, n_errors, check)
+        )
 
     if check and any_changed:
         exit_code = 1

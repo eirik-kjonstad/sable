@@ -25,6 +25,7 @@ from .tokens import Token, TokenKind
 # Configuration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class FormatConfig:
     """All knobs exposed to the user (Black-style: mostly zero knobs)."""
@@ -72,40 +73,53 @@ _OLD_TO_NEW_OP: dict[str, str] = {
 }
 
 # Operators that require spaces on both sides
-_BINARY_OP_KINDS: frozenset[TokenKind] = frozenset({
-    TokenKind.OP_PLUS,
-    TokenKind.OP_MINUS,
-    TokenKind.OP_STAR,
-    TokenKind.OP_SLASH,
-    TokenKind.OP_POWER,
-    TokenKind.OP_CONCAT,
-    TokenKind.OP_EQ,
-    TokenKind.OP_NEQ,
-    TokenKind.OP_LT,
-    TokenKind.OP_LE,
-    TokenKind.OP_GT,
-    TokenKind.OP_GE,
-    TokenKind.OP_AND,
-    TokenKind.OP_OR,
-    TokenKind.OP_NOT,
-    TokenKind.OP_EQV,
-    TokenKind.OP_NEQV,
-    TokenKind.OP_ASSIGN,
-    TokenKind.OP_ARROW,
-    TokenKind.OP_PERCENT,
-})
+_BINARY_OP_KINDS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_PLUS,
+        TokenKind.OP_MINUS,
+        TokenKind.OP_STAR,
+        TokenKind.OP_SLASH,
+        TokenKind.OP_POWER,
+        TokenKind.OP_CONCAT,
+        TokenKind.OP_EQ,
+        TokenKind.OP_NEQ,
+        TokenKind.OP_LT,
+        TokenKind.OP_LE,
+        TokenKind.OP_GT,
+        TokenKind.OP_GE,
+        TokenKind.OP_AND,
+        TokenKind.OP_OR,
+        TokenKind.OP_NOT,
+        TokenKind.OP_EQV,
+        TokenKind.OP_NEQV,
+        TokenKind.OP_ASSIGN,
+        TokenKind.OP_ARROW,
+        TokenKind.OP_PERCENT,
+    }
+)
 
 # These operators do NOT get spaces (tightly bound)
-_NO_SPACE_KINDS: frozenset[TokenKind] = frozenset({
-    TokenKind.OP_PERCENT,  # a%b
-    TokenKind.OP_POWER,    # a**b  (debatable, sable chooses no-space)
-})
+_NO_SPACE_KINDS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_PERCENT,  # a%b
+        TokenKind.OP_POWER,  # a**b  (debatable, sable chooses no-space)
+    }
+)
 
 # Control-flow keywords that must be followed by a space before '('
 # (excludes type keywords like integer, real, type, class where 'integer(8)' is correct)
-_KEYWORD_SPACE_BEFORE_PAREN: frozenset[str] = frozenset({
-    "if", "elseif", "else if", "while", "select", "case", "where", "forall",
-})
+_KEYWORD_SPACE_BEFORE_PAREN: frozenset[str] = frozenset(
+    {
+        "if",
+        "elseif",
+        "else if",
+        "while",
+        "select",
+        "case",
+        "where",
+        "forall",
+    }
+)
 
 # Compound end-keyword forms
 _COMPACT_TO_SPACED: dict[str, str] = {
@@ -132,6 +146,7 @@ _SPACED_TO_COMPACT: dict[str, str] = {v: k for k, v in _COMPACT_TO_SPACED.items(
 # ---------------------------------------------------------------------------
 # Token-level normalisation
 # ---------------------------------------------------------------------------
+
 
 def normalise_keyword_case(token: Token, cfg: FormatConfig) -> Token:
     """Apply configured keyword casing."""
@@ -169,9 +184,9 @@ def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
     kind_map = {
         "==": TokenKind.OP_EQ,
         "/=": TokenKind.OP_NEQ,
-        "<":  TokenKind.OP_LT,
+        "<": TokenKind.OP_LT,
         "<=": TokenKind.OP_LE,
-        ">":  TokenKind.OP_GT,
+        ">": TokenKind.OP_GT,
         ">=": TokenKind.OP_GE,
     }
     return Token(kind_map[replacement], replacement, token.line, token.col)
@@ -181,6 +196,7 @@ def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
 # Spacing rules
 # ---------------------------------------------------------------------------
 
+
 def _needs_space_before(prev: Token | None, curr: Token) -> bool:
     """Return True if a space is required before *curr*."""
     if prev is None:
@@ -188,8 +204,11 @@ def _needs_space_before(prev: Token | None, curr: Token) -> bool:
     pk, ck = prev.kind, curr.kind
 
     # Space between control-flow keyword and opening paren: if (cond), case (val), …
-    if ck == TokenKind.LPAREN and pk == TokenKind.KEYWORD \
-            and prev.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN:
+    if (
+        ck == TokenKind.LPAREN
+        and pk == TokenKind.KEYWORD
+        and prev.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN
+    ):
         return True
 
     # Space between closing paren and a following identifier or keyword:
@@ -228,14 +247,29 @@ def _needs_space_before(prev: Token | None, curr: Token) -> bool:
         return False
 
     # Default: space between distinct tokens
-    if pk not in (TokenKind.LPAREN, TokenKind.LBRACKET) and \
-       ck not in (TokenKind.RPAREN, TokenKind.RBRACKET, TokenKind.COMMA,
-                  TokenKind.COLON, TokenKind.DOUBLE_COLON):
+    if pk not in (TokenKind.LPAREN, TokenKind.LBRACKET) and ck not in (
+        TokenKind.RPAREN,
+        TokenKind.RBRACKET,
+        TokenKind.COMMA,
+        TokenKind.COLON,
+        TokenKind.DOUBLE_COLON,
+    ):
         # Names/keywords/literals separated by space
-        if pk in (TokenKind.NAME, TokenKind.KEYWORD, TokenKind.INTEGER,
-                  TokenKind.REAL, TokenKind.STRING, TokenKind.LOGICAL) and \
-           ck in (TokenKind.NAME, TokenKind.KEYWORD, TokenKind.INTEGER,
-                  TokenKind.REAL, TokenKind.STRING, TokenKind.LOGICAL):
+        if pk in (
+            TokenKind.NAME,
+            TokenKind.KEYWORD,
+            TokenKind.INTEGER,
+            TokenKind.REAL,
+            TokenKind.STRING,
+            TokenKind.LOGICAL,
+        ) and ck in (
+            TokenKind.NAME,
+            TokenKind.KEYWORD,
+            TokenKind.INTEGER,
+            TokenKind.REAL,
+            TokenKind.STRING,
+            TokenKind.LOGICAL,
+        ):
             return True
 
     return False
@@ -246,32 +280,76 @@ def _needs_space_before(prev: Token | None, curr: Token) -> bool:
 # ---------------------------------------------------------------------------
 
 # Keywords that increase indentation on the *next* line
-_INDENT_OPEN: frozenset[str] = frozenset({
-    "then", "do", "else", "contains",
-    "module", "program", "function", "subroutine",
-    "interface", "type", "associate", "block",
-    "critical", "where", "forall",
-    "select", "case",
-})
+_INDENT_OPEN: frozenset[str] = frozenset(
+    {
+        "then",
+        "do",
+        "else",
+        "contains",
+        "module",
+        "program",
+        "function",
+        "subroutine",
+        "interface",
+        "type",
+        "associate",
+        "block",
+        "critical",
+        "where",
+        "forall",
+        "select",
+        "case",
+    }
+)
 
 # Prefix attributes that may precede `function` or `subroutine` in a
 # procedure header, e.g. `pure function f(...)` or `recursive subroutine s()`
-_PROCEDURE_PREFIXES: frozenset[str] = frozenset({
-    "pure", "recursive", "elemental", "impure", "non_recursive",
-})
+_PROCEDURE_PREFIXES: frozenset[str] = frozenset(
+    {
+        "pure",
+        "recursive",
+        "elemental",
+        "impure",
+        "non_recursive",
+    }
+)
 
 # Keywords that close an indentation level (decrease before rendering)
-_INDENT_CLOSE: frozenset[str] = frozenset({
-    "end", "endif", "enddo", "endfunction", "endsubroutine",
-    "endmodule", "endprogram", "endwhere", "endselect",
-    "endinterface", "endtype", "endassociate", "endblock",
-    "endcritical", "end if", "end do", "end function",
-    "end subroutine", "end module", "end program", "end where",
-    "end select", "end interface", "end type", "end associate",
-    "end block", "end critical",
-    "else", "elseif", "case",
-    "contains",
-})
+_INDENT_CLOSE: frozenset[str] = frozenset(
+    {
+        "end",
+        "endif",
+        "enddo",
+        "endfunction",
+        "endsubroutine",
+        "endmodule",
+        "endprogram",
+        "endwhere",
+        "endselect",
+        "endinterface",
+        "endtype",
+        "endassociate",
+        "endblock",
+        "endcritical",
+        "end if",
+        "end do",
+        "end function",
+        "end subroutine",
+        "end module",
+        "end program",
+        "end where",
+        "end select",
+        "end interface",
+        "end type",
+        "end associate",
+        "end block",
+        "end critical",
+        "else",
+        "elseif",
+        "case",
+        "contains",
+    }
+)
 
 
 class IndentTracker:
@@ -313,7 +391,9 @@ class IndentTracker:
             # closing keywords (`else`, `elseif`, `case`, `contains`)
             # legitimately re-open via their last token (e.g. `then`).
             can_open_via_last = not (did_close and first.startswith("end"))
-            if (can_open_via_last and last in _INDENT_OPEN) or self._is_block_opener(first, non_comment):
+            if (can_open_via_last and last in _INDENT_OPEN) or self._is_block_opener(
+                first, non_comment
+            ):
                 self.open()
 
         return ind, did_close
@@ -349,6 +429,7 @@ class IndentTracker:
 # ---------------------------------------------------------------------------
 # Line rendering
 # ---------------------------------------------------------------------------
+
 
 def _render_tokens(tokens: list[Token]) -> str:
     """Render a token list to a string, inserting spaces via the spacing rules."""
@@ -500,7 +581,7 @@ def _split_string_literal(
     if len(tok_text) < 2:
         return [tok_text]
 
-    quote = tok_text[0]       # ' or "
+    quote = tok_text[0]  # ' or "
     content = tok_text[1:-1]  # strip surrounding quotes
 
     avail = line_length - prefix_len
@@ -563,7 +644,7 @@ def _try_expand_arg_list(
         return None
 
     open_idx, close_idx = paren_span
-    inner = body[open_idx + 1:close_idx]
+    inner = body[open_idx + 1 : close_idx]
 
     # Require at least one top-level comma (two or more arguments)
     depth = 0
@@ -582,8 +663,10 @@ def _try_expand_arg_list(
     # Do not explode control-flow constructs: if (…), while (…), select (…), …
     if open_idx > 0:
         prev_tok = body[open_idx - 1]
-        if (prev_tok.kind == TokenKind.KEYWORD
-                and prev_tok.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN):
+        if (
+            prev_tok.kind == TokenKind.KEYWORD
+            and prev_tok.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN
+        ):
             return None
 
     continuation_indent = indent + " " * cfg.indent_width
@@ -594,11 +677,11 @@ def _try_expand_arg_list(
     #   - the opening line: prefix + (
     #   - each argument: one line if it fits, or greedy-split into several lines
     # The closing ) goes on its own line at the original indent level.
-    prefix_with_open = _render_tokens(body[:open_idx + 1])
+    prefix_with_open = _render_tokens(body[: open_idx + 1])
     content_lines: list[str] = [indent + prefix_with_open]
 
     for i, arg_toks in enumerate(arg_groups):
-        is_last = (i == len(arg_groups) - 1)
+        is_last = i == len(arg_groups) - 1
         suffix = "" if is_last else ","
 
         single_line = continuation_indent + _render_tokens(arg_toks) + suffix
@@ -615,14 +698,14 @@ def _try_expand_arg_list(
             frags = _split_string_literal(
                 arg_toks[0].text,
                 len(continuation_indent),
-                continuation_indent,   # continuation lines align with the opening quote
+                continuation_indent,  # continuation lines align with the opening quote
                 cfg.line_length,
             )
             if len(frags) > 1:
                 content_lines.append(continuation_indent + frags[0])  # ends with &
                 for frag in frags[1:-1]:
-                    content_lines.append(frag)                         # ends with &
-                content_lines.append(frags[-1] + suffix)               # ends with quote
+                    content_lines.append(frag)  # ends with &
+                content_lines.append(frags[-1] + suffix)  # ends with quote
             else:
                 content_lines.append(single_line)
         else:
@@ -636,8 +719,9 @@ def _try_expand_arg_list(
     # Only lines that don't end with "&" participate in alignment.
     non_raw = [l for l in content_lines if not l.endswith("&")]
     fitting = [len(l) for l in non_raw if len(l) <= cfg.line_length - 2]
-    align_width = (max(fitting) if fitting
-                   else (max(len(l) for l in non_raw) if non_raw else 0))
+    align_width = (
+        max(fitting) if fitting else (max(len(l) for l in non_raw) if non_raw else 0)
+    )
     lines: list[str] = []
     for content in content_lines:
         if content.endswith("&"):
@@ -650,7 +734,7 @@ def _try_expand_arg_list(
     # Closing line(s): start with ')' at original indent, then any suffix tokens
     # (e.g. result(r) or chained expressions). Reuse the normal line renderer so
     # long suffixes are also split to respect line_length.
-    close_tokens = [body[close_idx]] + body[close_idx + 1:]
+    close_tokens = [body[close_idx]] + body[close_idx + 1 :]
     if comment is not None:
         close_tokens.append(comment)
     lines.extend(render_logical_line(close_tokens, indent, cfg))
@@ -756,11 +840,25 @@ def render_logical_line(
 # ---------------------------------------------------------------------------
 
 # Keywords that can follow `end` to form a compound end-keyword
-_END_CONTINUATIONS: frozenset[str] = frozenset({
-    "if", "do", "function", "subroutine", "module", "program",
-    "where", "select", "interface", "type", "associate", "block",
-    "critical", "forall", "enum",
-})
+_END_CONTINUATIONS: frozenset[str] = frozenset(
+    {
+        "if",
+        "do",
+        "function",
+        "subroutine",
+        "module",
+        "program",
+        "where",
+        "select",
+        "interface",
+        "type",
+        "associate",
+        "block",
+        "critical",
+        "forall",
+        "enum",
+    }
+)
 
 
 def merge_end_keywords(tokens: list[Token], cfg: FormatConfig) -> list[Token]:
@@ -798,6 +896,7 @@ def merge_end_keywords(tokens: list[Token], cfg: FormatConfig) -> list[Token]:
 # Single-line if splitting
 # ---------------------------------------------------------------------------
 
+
 def _split_single_line_if(
     tokens: list[Token],
 ) -> tuple[list[Token], list[Token]] | None:
@@ -831,18 +930,19 @@ def _split_single_line_if(
     if close_idx is None:
         return None
 
-    action = tokens[close_idx + 1:]
+    action = tokens[close_idx + 1 :]
     # Strip leading whitespace-only tokens; if nothing remains it's just if(cond)
     action_nc = [t for t in action if t.kind != TokenKind.COMMENT]
     if not action_nc:
         return None
 
-    return tokens[:close_idx + 1], action
+    return tokens[: close_idx + 1], action
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def format_source(source: str, cfg: FormatConfig | None = None) -> str:
     """Format *source* and return the formatted string.
@@ -880,15 +980,19 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         first = toks[0].text.lower()
         if first in ("end subroutine", "end function", "endsubroutine", "endfunction"):
             return True
-        return (first == "end" and len(toks) > 1
-                and toks[1].text.lower() in ("subroutine", "function"))
+        return (
+            first == "end"
+            and len(toks) > 1
+            and toks[1].text.lower() in ("subroutine", "function")
+        )
 
     def _is_start_routine(toks: list[Token]) -> bool:
         if not toks or _is_end_routine(toks):
             return False
-        return any(t.kind == TokenKind.KEYWORD
-                   and t.text.lower() in ("subroutine", "function")
-                   for t in toks)
+        return any(
+            t.kind == TokenKind.KEYWORD and t.text.lower() in ("subroutine", "function")
+            for t in toks
+        )
 
     last_was_end_routine = False
 
@@ -914,9 +1018,11 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         # Normalise blank lines between consecutive routines to exactly two,
         # but only when there are no comments in the gap.
-        if (last_was_end_routine
-                and _is_start_routine(non_comment)
-                and all(item is None for item in pending)):
+        if (
+            last_was_end_routine
+            and _is_start_routine(non_comment)
+            and all(item is None for item in pending)
+        ):
             pending.clear()
             output_lines.extend(["", ""])
         else:

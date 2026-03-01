@@ -49,6 +49,7 @@ from .tokens import Token
 # Base
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Node:
     """Base class for all CST nodes."""
@@ -63,6 +64,7 @@ class Node:
 # ---------------------------------------------------------------------------
 # Expressions
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Literal(Node):
@@ -102,19 +104,24 @@ class ArraySection(Node):
 @dataclass
 class PartRef(Node):
     """Component access: a%b%c."""
+
     parts: list[str] = field(default_factory=list)
 
 
-Expr = Literal | NameRef | UnaryOp | BinaryOp | FunctionCall | ArraySection | PartRef | Any
+Expr = (
+    Literal | NameRef | UnaryOp | BinaryOp | FunctionCall | ArraySection | PartRef | Any
+)
 
 
 # ---------------------------------------------------------------------------
 # Statements
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Statement(Node):
     """Generic statement (catch-all for unrecognised constructs)."""
+
     label: str | None = None
     raw_tokens: list[Token] = field(default_factory=list)
 
@@ -136,6 +143,7 @@ class ImplicitStatement(Node):
 @dataclass
 class TypeDeclaration(Node):
     """e.g. integer, intent(in) :: x, y"""
+
     label: str | None = None
     type_spec: str = ""
     attributes: list[str] = field(default_factory=list)
@@ -184,6 +192,7 @@ class ExitStatement(Node):
 # Constructs (multi-statement)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class IfConstruct(Node):
     label: str | None = None
@@ -214,6 +223,7 @@ class SelectCaseConstruct(Node):
 # ---------------------------------------------------------------------------
 # Program units
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ContainsStatement(Node):
