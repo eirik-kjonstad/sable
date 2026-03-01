@@ -1,7 +1,6 @@
 """Tests for the sable formatting engine."""
 
-import pytest
-from sable.formatter import format_source, FormatConfig
+from sable.formatter import FormatConfig, format_source
 
 
 def fmt(source: str, **kwargs) -> str:

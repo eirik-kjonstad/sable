@@ -11,10 +11,9 @@ Produces a flat list of Tokens from a source string. The lexer handles:
 from __future__ import annotations
 
 import re
-from typing import Iterator
+from collections.abc import Iterator
 
 from .tokens import KEYWORDS, Token, TokenKind
-
 
 # ---------------------------------------------------------------------------
 # Token patterns (order matters – more specific patterns first)

@@ -44,7 +44,6 @@ from typing import Any
 
 from .tokens import Token
 
-
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
@@ -79,26 +78,26 @@ class NameRef(Node):
 @dataclass
 class UnaryOp(Node):
     operator: str = ""
-    operand: "Expr | None" = None
+    operand: Expr | None = None
 
 
 @dataclass
 class BinaryOp(Node):
-    left: "Expr | None" = None
+    left: Expr | None = None
     operator: str = ""
-    right: "Expr | None" = None
+    right: Expr | None = None
 
 
 @dataclass
 class FunctionCall(Node):
     name: str = ""
-    args: list["Expr"] = field(default_factory=list)
+    args: list[Expr] = field(default_factory=list)
 
 
 @dataclass
 class ArraySection(Node):
     name: str = ""
-    subscripts: list["Expr | None"] = field(default_factory=list)
+    subscripts: list[Expr | None] = field(default_factory=list)
 
 
 @dataclass

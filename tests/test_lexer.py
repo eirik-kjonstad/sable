@@ -1,7 +1,6 @@
 """Tests for the Fortran lexer."""
 
-import pytest
-from sable.lexer import tokenize, iter_logical_lines
+from sable.lexer import iter_logical_lines, tokenize
 from sable.tokens import TokenKind
 
 

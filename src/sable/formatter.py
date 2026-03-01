@@ -14,12 +14,9 @@ so they can be individually toggled and tested.
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
-from typing import Callable
+from dataclasses import dataclass
 
 from .tokens import Token, TokenKind
-
 
 # ---------------------------------------------------------------------------
 # Configuration
