@@ -580,6 +580,27 @@ def _find_outermost_paren_group(tokens: list[Token]) -> tuple[int, int] | None:
     return None
 
 
+def _find_top_level_assignment_index(tokens: list[Token]) -> int | None:
+    """Return index of the first top-level assignment operator, if any."""
+    depth = 0
+    for i, tok in enumerate(tokens):
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+        elif tok.kind == TokenKind.OP_ASSIGN and depth == 0:
+            return i
+    return None
+
+
+def _is_lhs_subscript_paren_group(
+    tokens: list[Token], open_idx: int, close_idx: int
+) -> bool:
+    """Return True when `( ... )` is part of the assignment LHS designator."""
+    assignment_idx = _find_top_level_assignment_index(tokens)
+    return assignment_idx is not None and close_idx < assignment_idx
+
+
 def _split_at_top_commas(tokens: list[Token]) -> list[list[Token]]:
     """Split *tokens* at top-level commas, returning one group per argument."""
     groups: list[list[Token]] = []
@@ -756,28 +777,66 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
     if fit_upto == len(tokens):
         return len(tokens)
 
+    protected_end: int | None = None
     if fit_upto <= 1:
         split_at = fit_upto
     else:
-        priorities: list[list[int]] = [[], [], []]
-        for boundary in range(1, fit_upto + 1):
-            left = tokens[boundary - 1]
-            right = tokens[boundary] if boundary < len(tokens) else None
-            boundary_depth = depth_after[boundary - 1]
-            top_level = boundary_depth == start_depth
+        leading_paren = _find_outermost_paren_group(tokens)
+        if (
+            leading_paren is not None
+            and leading_paren[0] > 0
+            and tokens[0].kind in (TokenKind.NAME, TokenKind.KEYWORD)
+            and tokens[leading_paren[0]].kind == TokenKind.LPAREN
+            and leading_paren[1] <= fit_upto
+        ):
+            protected_end = leading_paren[1]
 
-            if left.kind == TokenKind.COMMA and top_level:
-                priorities[0].append(boundary)
-            elif left.kind == TokenKind.OP_ASSIGN and top_level:
-                priorities[1].append(boundary)
-            elif top_level and (
-                left.kind in _LOW_PRECEDENCE_SPLIT_OPS
-                or (right is not None and right.kind in _LOW_PRECEDENCE_SPLIT_OPS)
-            ):
-                priorities[2].append(boundary)
+        boundary_depths = [depth_after[i - 1] for i in range(1, fit_upto + 1)]
+        unique_depths = sorted(set(boundary_depths))
+        best_boundary: int | None = None
+        for target_depth in unique_depths:
+            priorities: list[list[int]] = [[], [], []]
+            for boundary in range(1, fit_upto + 1):
+                left = tokens[boundary - 1]
+                right = tokens[boundary] if boundary < len(tokens) else None
+                boundary_depth = depth_after[boundary - 1]
+                same_depth = boundary_depth == target_depth
 
-        best = next((p for p in priorities if p), None)
-        split_at = best[-1] if best else fit_upto
+                if left.kind == TokenKind.COMMA and same_depth:
+                    priorities[0].append(boundary)
+                elif left.kind == TokenKind.OP_ASSIGN and same_depth:
+                    priorities[1].append(boundary)
+                elif same_depth and (
+                    left.kind in _LOW_PRECEDENCE_SPLIT_OPS
+                    or (right is not None and right.kind in _LOW_PRECEDENCE_SPLIT_OPS)
+                ):
+                    priorities[2].append(boundary)
+
+            # For a leading designator/function-like prefix `name(...)`, avoid
+            # splitting inside that first parenthesised segment when there are
+            # viable boundaries after the closing parenthesis.
+            if protected_end is not None:
+                filtered: list[list[int]] = []
+                for group in priorities:
+                    post = [b for b in group if b > protected_end]
+                    filtered.append(post if post else group)
+                priorities = filtered
+
+            best = next((p for p in priorities if p), None)
+            if best:
+                best_boundary = best[-1]
+                break
+
+        split_at = best_boundary if best_boundary is not None else fit_upto
+
+    # If we still chose a split inside a protected leading designator segment,
+    # move the split right after the closing ')' when possible.
+    if (
+        protected_end is not None
+        and split_at <= protected_end
+        and protected_end < fit_upto
+    ):
+        split_at = protected_end + 1
 
     adjusted = _avoid_percent_split(tokens, split_at)
     split_at = adjusted if adjusted > 0 else split_at
@@ -876,6 +935,11 @@ def _try_expand_arg_list(
 
     open_idx, close_idx = paren_span
     inner = body[open_idx + 1 : close_idx]
+
+    # Assignment LHS designators such as arr(i, j) are index lists, not
+    # call-like argument lists. Prefer keeping them compact and wrapping RHS.
+    if _is_lhs_subscript_paren_group(body, open_idx, close_idx):
+        return None
 
     # Require at least one top-level comma (two or more arguments)
     depth = 0
@@ -993,6 +1057,9 @@ def _prefer_exploded_arg_list(tokens: list[Token]) -> bool:
 
     open_idx, close_idx = paren_span
     inner = tokens[open_idx + 1 : close_idx]
+
+    if _is_lhs_subscript_paren_group(tokens, open_idx, close_idx):
+        return False
 
     depth = 0
     has_top_comma = False

@@ -950,6 +950,60 @@ class TestArgListExpansion:
         assert any(line.lstrip().startswith("gamma") for line in lines)
         assert lines[-1] == ")"
 
+    def test_assignment_lhs_index_list_is_not_exploded(self):
+        src = (
+            "s_aibj(a, i, b, j) = (g_aibj(a, i, b, j)) / (- wf%orbital_energies("
+            "a + wf%n_o) - wf%orbital_energies(b + wf%n_o) + wf%orbital_energies(i)"
+            " + wf%orbital_energies(j))\n"
+        )
+        result = fmt(src, line_length=95)
+        lines = result.splitlines()
+        assert not any("s_aibj( &" in line for line in lines)
+        assert any("s_aibj(a, i, b, j) =" in line for line in lines)
+        # RHS should still split at assignment/operator boundaries when long.
+        assert lines[0].rstrip().endswith("= &")
+        assert any(
+            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
+            for line in lines[1:-1]
+        )
+
+    def test_sticky_exploded_lhs_index_list_can_collapse(self):
+        src = (
+            "s_aibj( &\n"
+            "   a,   &\n"
+            "   i,   &\n"
+            "   b,   &\n"
+            "   j    &\n"
+            ") = x + y + z + w + q + r\n"
+        )
+        result = fmt(src, line_length=80)
+        assert "s_aibj( &" not in result
+        assert "s_aibj(a, i, b, j) =" in result
+
+    def test_does_not_split_inside_leading_designator_when_rhs_boundary_fits(self):
+        src = (
+            "t2bar(a, i, b, j) = (g_aibj(a, i, b, j)) / (- wf%orbital_energies("
+            "a + wf%n_o) - wf%orbital_energies(b + wf%n_o) + wf%orbital_energies(i)"
+            " + wf%orbital_energies(j))\n"
+        )
+        result = fmt(src, line_length=95)
+        lines = result.splitlines()
+        assert not any("t2bar(a, i, b, &" in line for line in lines)
+        assert any("t2bar(a, i, b, j) =" in line for line in lines)
+
+    def test_continued_rhs_designator_splits_after_closing_paren(self):
+        src = (
+            "                  t2bar(a, i, b, j) = t2bar(a, i, b, j)/&\n"
+            "                     (-  wf%orbital_energies(a + wf%n_o) &\n"
+            "                      -  wf%orbital_energies(b + wf%n_o) &\n"
+            "                      +  wf%orbital_energies(i) &\n"
+            "                      +  wf%orbital_energies(j))\n"
+        )
+        result = fmt(src)
+        lines = result.splitlines()
+        assert not any("t2bar(a, i, b, &" in line for line in lines)
+        assert any(line.rstrip().endswith("j) &") for line in lines)
+
 
 class TestStringHandling:
     """String literals: content is opaque, in-string continuations are normalised."""
