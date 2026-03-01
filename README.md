@@ -18,17 +18,30 @@ pip install sable
 
 ```bash
 # Format files in place
-sable my_module.f90 src/**/*.f90
+sable my_module.f90
+
+# Format all Fortran files in a directory (recursively)
+sable src/
+
+# Format multiple files and directories
+sable src/ tests/module.f90
 
 # Check without modifying (exit 1 if any file would change)
-sable --check src/**/*.f90
+sable --check src/
 
 # Show a unified diff of changes
 sable --diff my_module.f90
 
 # Format stdin, write to stdout
 cat code.f90 | sable
+cat code.f90 | sable -
+
+# Format stdin and label it in diagnostics
+cat code.f90 | sable --stdin-filename my_module.f90
 ```
+
+Sable recognises `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`, and
+`.F08` files when scanning directories.
 
 ## Formatting decisions
 
@@ -95,33 +108,90 @@ are kept, but normalised to lower-case.
 - **One space** after each comma: `call foo(a, b, c)`.
 - **No space** inside parentheses or brackets: `foo(a, b)` not `foo( a, b )`.
 - **No space** around `:` in array subscripts/slices: `a(1:n)`.
-- **One space** before inline comments: `x = 1  ! comment`.
+- **Two spaces** before inline comments: `x = 1  ! comment`.
 
 ### Indentation
 
-- **2 spaces** per level by default *(configurable: `--indent-width N`)*.
+- **3 spaces** per level by default *(configurable: `--indent-width N`)*.
 - Indentation increases after: `then`, `do`, `else`, `contains`, `module`,
   `program`, `function`, `subroutine`, `interface`, `type`, `select case`,
   `associate`, `block`, `critical`, `where`, `forall`.
-- `else` / `elseif` / `case` dedent before the line, then re-indent the body.
+- `else` / `elseif` / `case` / `contains` dedent before the line, then
+  re-indent the body.
 
 ```fortran
 do i = 1, n
-  do j = 1, m
-    a(i, j) = i + j
-  end do
+   do j = 1, m
+      a(i, j) = i + j
+   end do
 end do
 ```
 
-### Line length
+### Line length and continuation
 
-Lines exceeding **100 characters** (*(configurable: `--line-length N`)*)
-are broken with Fortran continuation markers (`&`). Continuation lines are
+Lines exceeding **100 characters** *(configurable: `--line-length N`)* are
+broken with Fortran continuation markers (`&`). Continuation lines are
 indented by one additional level.
 
-### File endings
+**Argument-list explosion.** When a call, definition, or similar construct has
+multiple arguments and is too long to fit on one line, Sable explodes it
+one-argument-per-line (Black style), with `&` markers aligned in a column:
 
-Files always end with exactly **one newline** character.
+```fortran
+! Before (too long)
+call compute(alpha_input, beta_input, gamma_input, result_output)
+
+! After
+call compute(  &
+   alpha_input, &
+   beta_input,  &
+   gamma_input, &
+   result_output &
+)
+```
+
+**String literal splitting.** String literals that are too long to fit on one
+physical line are split using Fortran in-string continuation:
+
+```fortran
+description = &
+   'A long description that would otherwise exceed the line &
+   &length limit is split here.'
+```
+
+The in-string `&` at the end of a physical line and the resuming `&` at the
+start of the next are stripped when the file is re-read, so the string value
+is preserved exactly.
+
+**Single-line `if` statements** that fit within the line limit are kept on one
+line. If they are too long, the action is split to a continuation line:
+
+```fortran
+! Short: kept as-is
+if (x > 0) y = y + 1
+
+! Long: split at the action boundary
+if (norm2(residual) > threshold) &
+   call handle_convergence_failure(solver)
+```
+
+### Blank lines between routines
+
+Consecutive `subroutine` and `function` definitions within a `module` or
+`contains` block are separated by exactly **two blank lines**. Comment-only
+gaps are left as-is.
+
+### Comment indentation
+
+Standalone comment lines and blank lines between statements are held in a
+buffer and emitted at the indentation level of the **next** code line, so
+comments always align with the code they precede.
+
+### Preprocessor directives
+
+Lines beginning with `#` (e.g. `#ifdef`, `#define`, `#endif`) are passed
+through unchanged and always emitted at **column 0**, regardless of the
+surrounding indentation level.
 
 ### Semicolons
 
@@ -136,6 +206,10 @@ x = 1
 y = 2
 ```
 
+### File endings
+
+Files always end with exactly **one newline** character.
+
 ## Configuration
 
 Sable intentionally exposes very few options (Black philosophy). The supported
@@ -143,8 +217,8 @@ flags are:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--line-length` | `100` | Max line length |
-| `--indent-width` | `2` | Spaces per indent level |
+| `--line-length`, `-l` | `100` | Max line length |
+| `--indent-width`, `-i` | `3` | Spaces per indent level |
 | `--keyword-case` | `lower` | `lower` or `upper` |
 | `--end-keyword-form` | `spaced` | `spaced` or `compact` |
 | `--no-normalize-operators` | off | Keep old-style relational operators |
@@ -152,7 +226,6 @@ flags are:
 ## Roadmap
 
 - [ ] `pyproject.toml` / `sable.toml` configuration file support
-- [ ] Blank-line normalisation between program units and declarations
 - [ ] Alignment of `::` in declaration blocks
 - [ ] `USE` statement sorting and deduplication
 - [ ] `IMPLICIT NONE` insertion
