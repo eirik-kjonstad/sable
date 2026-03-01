@@ -71,6 +71,11 @@ class TestOperatorNormalisation:
         result = fmt("if (a .EQ. b)", normalize_operators=False)
         assert ".eq." in result
 
+    def test_old_style_and_after_integer_dot(self):
+        source = "IF(mem_allocated_global.GT.0.AND.nsize.GT.0)THEN\nend if\n"
+        result = fmt(source)
+        assert "if (mem_allocated_global > 0 .and. nsize > 0) then" in result
+
 
 class TestTrailingNewline:
     def test_adds_trailing_newline(self):
@@ -163,6 +168,27 @@ class TestIndentation:
         body_line = next(line for line in lines if "x = i + j" in line)
         assert body_line.startswith("    ")  # 2 levels * 2 spaces
 
+    def test_labelled_do_closed_by_continue(self):
+        source = (
+            "do 10 i = 1, 2\n"
+            "do 15 j = 1, 2\n"
+            "x = i + j\n"
+            "15 continue\n"
+            "10 continue\n"
+            "y = 1\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        body = next(line for line in lines if line.strip() == "x = i + j")
+        inner_close = next(line for line in lines if line.strip() == "15 continue")
+        outer_close = next(line for line in lines if line.strip() == "10 continue")
+        after = next(line for line in lines if line.strip() == "y = 1")
+
+        assert body.startswith("      ")  # two levels (indent_width=3 default)
+        assert inner_close.startswith("   ")  # one level after closing inner do
+        assert not outer_close.startswith(" ")  # closed outer do
+        assert not after.startswith(" ")  # back at top-level
+
     def test_type_contains_end_type_same_indent(self):
         source = (
             "type :: mytype\n"
@@ -230,6 +256,25 @@ class TestDirectives:
         lines = result.splitlines()
         define_line = next(line for line in lines if "#define" in line)
         assert define_line == "#define MAX 100"
+
+    def test_directives_after_continuation_stay_at_column_zero(self):
+        source = (
+            "#ifdef SYS_REAL\n"
+            "PARAMETER ( XTJ  = 4.35974380425140E-18_realk, &\n"
+            "     &    XTHZ =   6.57968391802650E+15_realk, &  \n"
+            "#else\n"
+            "PARAMETER ( XTJ  = HBAR**2/(bohr_to_angstromM10*bohr_to_angstromM10"
+            "*EMASS), &\n"
+            "     &    XTHZ =  HBAR/(2.0E0_realk*PI*bohr_to_angstromM10"
+            "*bohr_to_angstromM10*EMASS), &  \n"
+            "#endif\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        else_line = next(line for line in lines if line.lstrip().startswith("#else"))
+        endif_line = next(line for line in lines if line.lstrip().startswith("#endif"))
+        assert else_line == "#else"
+        assert endif_line == "#endif"
 
 
 class TestKeywordParenSpacing:

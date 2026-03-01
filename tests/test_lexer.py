@@ -78,6 +78,13 @@ class TestOperators:
     def test_modern_ne(self):
         assert kinds("/=") == [TokenKind.OP_NEQ]
 
+    def test_named_op_after_integer_not_lexed_as_real(self):
+        assert kinds("0.AND.nsize") == [
+            TokenKind.INTEGER,
+            TokenKind.OP_AND,
+            TokenKind.NAME,
+        ]
+
 
 class TestComments:
     def test_inline_comment(self):

@@ -380,8 +380,11 @@ class IndentTracker:
         if not line_tokens:
             return self.indent(), False
 
-        first = line_tokens[0].text.lower()
+        first = self._first_keyword(line_tokens)
         did_close = first in _INDENT_CLOSE
+        if not did_close and self._is_labelled_continue(line_tokens):
+            # Legacy labelled-do termination: `10 continue` closes one DO level.
+            did_close = True
         if did_close:
             self.close()
 
@@ -404,6 +407,33 @@ class IndentTracker:
                 self.open()
 
         return ind, did_close
+
+    @staticmethod
+    def _first_keyword(line_tokens: list[Token]) -> str:
+        """Return the first keyword text, skipping an optional leading label."""
+        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
+        if not non_comment:
+            return ""
+        if non_comment[0].kind == TokenKind.KEYWORD:
+            return non_comment[0].text.lower()
+        if (
+            len(non_comment) > 1
+            and non_comment[0].kind in (TokenKind.INTEGER, TokenKind.LABEL)
+            and non_comment[1].kind == TokenKind.KEYWORD
+        ):
+            return non_comment[1].text.lower()
+        return non_comment[0].text.lower()
+
+    @staticmethod
+    def _is_labelled_continue(line_tokens: list[Token]) -> bool:
+        """Return True for lines like `15 continue` (legacy labelled-DO terminator)."""
+        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
+        return (
+            len(non_comment) >= 2
+            and non_comment[0].kind in (TokenKind.INTEGER, TokenKind.LABEL)
+            and non_comment[1].kind == TokenKind.KEYWORD
+            and non_comment[1].text.lower() == "continue"
+        )
 
     @staticmethod
     def _is_block_opener(first: str, non_comment: list[Token]) -> bool:

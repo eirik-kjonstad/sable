@@ -89,6 +89,7 @@ KEYWORDS: frozenset[str] = frozenset(
         "endif",
         "do",
         "while",
+        "continue",
         "end do",
         "enddo",
         "cycle",

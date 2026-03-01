@@ -29,6 +29,7 @@ _TOKEN_RE = re.compile(
           | \.[0-9]+(?:[eEdD][+-]?[0-9]+)?          # .5   .5e-2
           | [0-9]+[eEdD][+-]?[0-9]+                 # 1e3  (no dot)
         )(?:_[A-Za-z0-9_]+)?                        # optional kind: _dp  _8
+        (?![A-Za-z]+\.)                             # avoid swallowing .AND./.GT./...
     )                          |
     (?P<INTEGER>  [0-9]+(?:_[A-Za-z0-9_]+)?  )  |  # optional kind: _int32  _8
     (?P<STRING>
@@ -230,6 +231,22 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
             while j < len(tokens) and tokens[j].kind == TokenKind.COMMENT:
                 j += 1
             if j < len(tokens) and tokens[j].kind == TokenKind.NEWLINE:
+                # If the next non-blank physical line starts with a preprocessor
+                # directive, do not fold it into this logical line. Directives
+                # must remain standalone so they can be emitted at column 0.
+                k = j + 1
+                while k < len(tokens) and tokens[k].kind == TokenKind.NEWLINE:
+                    k += 1
+                if k < len(tokens) and tokens[k].kind == TokenKind.DIRECTIVE:
+                    current.append(tok)
+                    if current:
+                        yield current
+                    current = []
+                    continued = False
+                    saw_continuation_content = False
+                    i = j + 1
+                    continue
+
                 # Check whether the *next* physical line is a comment-only
                 # line.  If so, switch to "verbatim physical-line" mode:
                 # yield each physical segment with its trailing & so that
