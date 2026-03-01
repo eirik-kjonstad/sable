@@ -693,8 +693,7 @@ class TestStringSplittingInArgList:
         assert all(len(line) <= 60 for line in lines)
         # In-string continuation: a line ends with bare & (no space before it)
         assert any(
-            line.rstrip().endswith("&")
-            and not line.rstrip().endswith(" &")
+            line.rstrip().endswith("&") and not line.rstrip().endswith(" &")
             for line in lines
         )
 
