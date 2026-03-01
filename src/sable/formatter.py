@@ -528,6 +528,19 @@ _DIRECTIVE_BRANCH_RE = re.compile(
 _FORMAT_CONTROL_RE = re.compile(r"^\s*!\s*sable:\s*(off|on)\b", flags=re.IGNORECASE)
 """Match formatting control comments: `! sable: off` / `! sable: on`."""
 
+_LOW_PRECEDENCE_SPLIT_OPS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_OR,
+        TokenKind.OP_AND,
+        TokenKind.OP_EQV,
+        TokenKind.OP_NEQV,
+        TokenKind.OP_PLUS,
+        TokenKind.OP_MINUS,
+        TokenKind.OP_CONCAT,
+    }
+)
+"""Operators preferred as line-break boundaries after commas/assignment."""
+
 
 # ---------------------------------------------------------------------------
 # Line rendering
@@ -677,28 +690,8 @@ def _greedy_split_arg(
 
     while remaining:
         budget = cfg.line_length - len(current_indent) - 2  # room for ' &'
-        parts_acc: list[str] = []
-        prev: Token | None = None
-        char_count = 0
-        split_at = len(remaining)
-        depth = current_depth
-
-        for idx, tok in enumerate(remaining):
-            space = " " if _needs_space_before(prev, tok, depth) else ""
-            token_str = space + tok.text
-            if char_count + len(token_str) > budget and idx > 0:
-                adjusted = _avoid_percent_split(remaining, idx)
-                split_at = adjusted if adjusted > 0 else idx
-                split_at = _avoid_array_constructor_split(remaining, split_at)
-                split_at = _avoid_leading_comma_split(remaining, split_at)
-                break
-            parts_acc.append(token_str)
-            char_count += len(token_str)
-            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
-                depth += 1
-            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
-                depth = max(0, depth - 1)
-            prev = tok
+        split_at = _pick_split_index(remaining, budget, current_depth)
+        parts_acc = _render_prefix(remaining[:split_at], current_depth)
 
         for tok in remaining[:split_at]:
             if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
@@ -717,6 +710,80 @@ def _greedy_split_arg(
         current_indent = cont_indent
 
     return lines if lines else [first_indent + _render_tokens(arg_toks) + suffix]
+
+
+def _render_prefix(tokens: list[Token], start_depth: int) -> list[str]:
+    """Render token prefix to spacing-aware string chunks."""
+    parts: list[str] = []
+    prev: Token | None = None
+    depth = start_depth
+    for tok in tokens:
+        space = " " if _needs_space_before(prev, tok, depth) else ""
+        parts.append(space + tok.text)
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+        prev = tok
+    return parts
+
+
+def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int:
+    """Pick a split boundary using precedence: comma > '=' > low-precedence ops."""
+    if not tokens:
+        return 0
+
+    prev: Token | None = None
+    depth = start_depth
+    char_count = 0
+    fit_upto = len(tokens)
+    depth_after: list[int] = []
+
+    for idx, tok in enumerate(tokens):
+        space = " " if _needs_space_before(prev, tok, depth) else ""
+        token_str = space + tok.text
+        if char_count + len(token_str) > budget and idx > 0:
+            fit_upto = idx
+            break
+        char_count += len(token_str)
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+        depth_after.append(depth)
+        prev = tok
+
+    if fit_upto == len(tokens):
+        return len(tokens)
+
+    if fit_upto <= 1:
+        split_at = fit_upto
+    else:
+        priorities: list[list[int]] = [[], [], []]
+        for boundary in range(1, fit_upto + 1):
+            left = tokens[boundary - 1]
+            right = tokens[boundary] if boundary < len(tokens) else None
+            boundary_depth = depth_after[boundary - 1]
+            top_level = boundary_depth == start_depth
+
+            if left.kind == TokenKind.COMMA and top_level:
+                priorities[0].append(boundary)
+            elif left.kind == TokenKind.OP_ASSIGN and top_level:
+                priorities[1].append(boundary)
+            elif top_level and (
+                left.kind in _LOW_PRECEDENCE_SPLIT_OPS
+                or (right is not None and right.kind in _LOW_PRECEDENCE_SPLIT_OPS)
+            ):
+                priorities[2].append(boundary)
+
+        best = next((p for p in priorities if p), None)
+        split_at = best[-1] if best else fit_upto
+
+    adjusted = _avoid_percent_split(tokens, split_at)
+    split_at = adjusted if adjusted > 0 else split_at
+    split_at = _avoid_array_constructor_split(tokens, split_at)
+    split_at = _avoid_leading_comma_split(tokens, split_at)
+    return split_at
 
 
 def _split_string_literal(
@@ -1038,28 +1105,8 @@ def render_logical_line(
 
         # Budget: line_length - len(current_indent) - 2 (for ' &')
         budget = cfg.line_length - len(current_indent) - 2
-        parts_acc: list[str] = []
-        prev2: Token | None = None
-        char_count = 0
-        split_at = len(remaining)  # default: all remaining tokens
-        depth = current_depth
-
-        for idx, tok in enumerate(remaining):
-            space = " " if _needs_space_before(prev2, tok, depth) else ""
-            token_str = space + tok.text
-            if char_count + len(token_str) > budget and idx > 0:
-                adjusted = _avoid_percent_split(remaining, idx)
-                split_at = adjusted if adjusted > 0 else idx
-                split_at = _avoid_array_constructor_split(remaining, split_at)
-                split_at = _avoid_leading_comma_split(remaining, split_at)
-                break
-            parts_acc.append(token_str)
-            char_count += len(token_str)
-            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
-                depth += 1
-            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
-                depth = max(0, depth - 1)
-            prev2 = tok
+        split_at = _pick_split_index(remaining, budget, current_depth)
+        parts_acc = _render_prefix(remaining[:split_at], current_depth)
 
         for tok in remaining[:split_at]:
             if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
@@ -1067,7 +1114,7 @@ def render_logical_line(
             elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
                 current_depth = max(0, current_depth - 1)
 
-        chunk = "".join(parts_acc[:split_at])
+        chunk = "".join(parts_acc)
         remaining = remaining[split_at:]
 
         if remaining:

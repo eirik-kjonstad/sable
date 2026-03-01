@@ -146,6 +146,10 @@ Lines exceeding **100 characters** *(configurable: `--line-length N`)* are
 broken with Fortran continuation markers (`&`). Continuation lines are
 indented by one additional level.
 
+When choosing line-break points, Sable uses deterministic priority rules:
+top-level commas first, then assignment (`=`), then low-precedence operators
+(`.or.`, `.and.`, `+`, `-`, `//`), before falling back to greedy splitting.
+
 **Argument-list explosion.** When a call, definition, or similar construct has
 multiple arguments and is too long to fit on one line, Sable explodes it
 one-argument-per-line (Black style), with `&` markers aligned in a column:

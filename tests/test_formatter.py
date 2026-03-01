@@ -1203,6 +1203,37 @@ class TestStringSplitting:
         assert "&" not in result
 
 
+class TestLineBreakPriority:
+    def test_split_prefers_top_level_commas(self):
+        src = (
+            "integer :: alpha_variable, beta_variable, gamma_variable, delta_variable\n"
+        )
+        result = fmt(src, line_length=44)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert lines[0].rstrip().endswith(", &")
+        assert not any(
+            line.rstrip().endswith("= &") for line in lines
+        )  # ensure comma wins here
+
+    def test_split_prefers_assignment_before_low_precedence_operator(self):
+        src = "very_long_target_name = alpha_value + beta_value + gamma_value\n"
+        result = fmt(src, line_length=46)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert lines[0].rstrip().endswith("= &")
+
+    def test_split_prefers_low_precedence_operator_boundary(self):
+        src = "value = alpha*beta + gamma*delta + epsilon*zeta + eta*theta\n"
+        result = fmt(src, line_length=44)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert any(
+            line.rstrip().endswith("+ &") or line.rstrip().endswith(".and. &")
+            for line in lines[:-1]
+        )
+
+
 class TestColonSpacing:
     """Colon spacing: no space before ':', space after ':' only at top level."""
 
