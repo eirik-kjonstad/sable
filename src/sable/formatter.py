@@ -741,10 +741,12 @@ def _try_expand_arg_list(
     # Align & markers.  Lines that end with a bare "&" are in-string continuation
     # lines: they must NOT receive an additional statement "&" (invalid Fortran).
     # Only lines that don't end with "&" participate in alignment.
-    non_raw = [l for l in content_lines if not l.endswith("&")]
-    fitting = [len(l) for l in non_raw if len(l) <= cfg.line_length - 2]
+    non_raw = [line for line in content_lines if not line.endswith("&")]
+    fitting = [len(line) for line in non_raw if len(line) <= cfg.line_length - 2]
     align_width = (
-        max(fitting) if fitting else (max(len(l) for l in non_raw) if non_raw else 0)
+        max(fitting)
+        if fitting
+        else (max(len(line) for line in non_raw) if non_raw else 0)
     )
     lines: list[str] = []
     for content in content_lines:

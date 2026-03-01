@@ -34,7 +34,10 @@ def _summary(n_changed: int, n_unchanged: int, n_errors: int, check: bool) -> st
         if n_changed:
             parts.append(
                 click.style(
-                    f"{n_changed} file{'s' if n_changed != 1 else ''} would be reformatted",
+                    (
+                        f"{n_changed} file{'s' if n_changed != 1 else ''} "
+                        "would be reformatted"
+                    ),
                     fg="yellow",
                     bold=True,
                 )

@@ -115,7 +115,10 @@ class TestPercentSplitting:
 
     def test_percent_not_split(self):
         # wf%element must stay together on one line
-        src = "result = very_long_variable_name + another_long_name + wf%element + other\n"
+        src = (
+            "result = very_long_variable_name + another_long_name + "
+            "wf%element + other\n"
+        )
         result = fmt(src, line_length=60)
         self._no_bad_percent(result)
         assert "wf%element" in result
@@ -128,7 +131,10 @@ class TestPercentSplitting:
         assert "this%wf%element" in result
 
     def test_percent_split_idempotent(self):
-        src = "result = very_long_variable_name + another_long_name + wf%element + other\n"
+        src = (
+            "result = very_long_variable_name + another_long_name + "
+            "wf%element + other\n"
+        )
         once = fmt(src, line_length=60)
         twice = fmt(once, line_length=60)
         assert once == twice
@@ -140,21 +146,21 @@ class TestIndentation:
         result = fmt(source)
         lines = result.splitlines()
         # The body line should be indented
-        body_line = next(l for l in lines if "x = i" in l)
+        body_line = next(line for line in lines if "x = i" in line)
         assert body_line.startswith("  ")
 
     def test_if_body_indented(self):
         source = "if (x > 0) then\ny = 1\nend if"
         result = fmt(source)
         lines = result.splitlines()
-        body_line = next(l for l in lines if "y = 1" in l)
+        body_line = next(line for line in lines if "y = 1" in line)
         assert body_line.startswith("  ")
 
     def test_nested_indentation(self):
         source = "do i = 1, 10\ndo j = 1, 10\nx = i + j\nend do\nend do"
         result = fmt(source)
         lines = result.splitlines()
-        body_line = next(l for l in lines if "x = i + j" in l)
+        body_line = next(line for line in lines if "x = i + j" in line)
         assert body_line.startswith("    ")  # 2 levels * 2 spaces
 
     def test_type_contains_end_type_same_indent(self):
@@ -167,9 +173,9 @@ class TestIndentation:
         )
         result = fmt(source)
         lines = result.splitlines()
-        type_line = next(l for l in lines if l.lstrip().startswith("type ::"))
-        contains_line = next(l for l in lines if l.strip() == "contains")
-        end_type_line = next(l for l in lines if "end type" in l)
+        type_line = next(line for line in lines if line.lstrip().startswith("type ::"))
+        contains_line = next(line for line in lines if line.strip() == "contains")
+        end_type_line = next(line for line in lines if "end type" in line)
         type_indent = len(type_line) - len(type_line.lstrip())
         assert len(contains_line) - len(contains_line.lstrip()) == type_indent
         assert len(end_type_line) - len(end_type_line.lstrip()) == type_indent
@@ -185,9 +191,11 @@ class TestIndentation:
         )
         result = fmt(source)
         lines = result.splitlines()
-        module_line = next(l for l in lines if l.lstrip().startswith("module "))
-        contains_line = next(l for l in lines if l.strip() == "contains")
-        end_module_line = next(l for l in lines if "end module" in l)
+        module_line = next(
+            line for line in lines if line.lstrip().startswith("module ")
+        )
+        contains_line = next(line for line in lines if line.strip() == "contains")
+        end_module_line = next(line for line in lines if "end module" in line)
         module_indent = len(module_line) - len(module_line.lstrip())
         assert len(contains_line) - len(contains_line.lstrip()) == module_indent
         assert len(end_module_line) - len(end_module_line.lstrip()) == module_indent
@@ -195,11 +203,17 @@ class TestIndentation:
 
 class TestDirectives:
     def test_directive_at_column_zero(self):
-        source = "subroutine foo()\n#ifdef USE_LIBINT\n  call bar()\n#endif\nend subroutine foo\n"
+        source = (
+            "subroutine foo()\n"
+            "#ifdef USE_LIBINT\n"
+            "  call bar()\n"
+            "#endif\n"
+            "end subroutine foo\n"
+        )
         result = fmt(source)
         lines = result.splitlines()
-        ifdef_line = next(l for l in lines if "#ifdef" in l)
-        endif_line = next(l for l in lines if "#endif" in l)
+        ifdef_line = next(line for line in lines if "#ifdef" in line)
+        endif_line = next(line for line in lines if "#endif" in line)
         assert ifdef_line == "#ifdef USE_LIBINT"
         assert endif_line == "#endif"
 
@@ -214,7 +228,7 @@ class TestDirectives:
         source = "module m\n#define MAX 100\nend module m\n"
         result = fmt(source)
         lines = result.splitlines()
-        define_line = next(l for l in lines if "#define" in l)
+        define_line = next(line for line in lines if "#define" in line)
         assert define_line == "#define MAX 100"
 
 
@@ -299,7 +313,7 @@ class TestSingleLineIf:
         for src in (src_inline, src_split):
             result = fmt(src)
             lines = result.splitlines()
-            action_idx = next(i for i, l in enumerate(lines) if "x = 1" in l)
+            action_idx = next(i for i, line in enumerate(lines) if "x = 1" in line)
             assert lines[action_idx + 1] == "", f"blank line missing in: {result!r}"
 
     def test_existing_if_continuation_with_blank_line_kept(self):
@@ -312,7 +326,7 @@ class TestSingleLineIf:
         result = fmt(src, line_length=80)
         lines = result.splitlines()
         converged_idx = next(
-            i for i, l in enumerate(lines) if "converged = .TRUE." in l
+            i for i, line in enumerate(lines) if "converged = .TRUE." in line
         )
         assert lines[converged_idx - 1].endswith(" &")
         assert lines[converged_idx].strip() == "converged = .TRUE."
@@ -331,8 +345,8 @@ class TestRoutineSeparation:
     def _between(self, result: str) -> list[str]:
         """Lines between end subroutine foo and subroutine bar."""
         lines = result.splitlines()
-        a = next(i for i, l in enumerate(lines) if "end subroutine foo" in l)
-        b = next(i for i, l in enumerate(lines) if "subroutine bar" in l)
+        a = next(i for i, line in enumerate(lines) if "end subroutine foo" in line)
+        b = next(i for i, line in enumerate(lines) if "subroutine bar" in line)
         return lines[a + 1 : b]
 
     def test_one_blank_normalized_to_two(self):
@@ -354,7 +368,7 @@ class TestRoutineSeparation:
         src = self._base.format(gap="  ! note\n")
         between = self._between(fmt(src))
         # comment present: blank lines not forced
-        assert any("! note" in l for l in between)
+        assert any("! note" in line for line in between)
         assert len(between) == 1  # just the comment, no extra blanks injected
 
     def test_pure_function_detected(self):
@@ -368,8 +382,8 @@ class TestRoutineSeparation:
         )
         result = fmt(src)
         lines = result.splitlines()
-        a = next(i for i, l in enumerate(lines) if "end subroutine foo" in l)
-        b = next(i for i, l in enumerate(lines) if "pure function bar" in l)
+        a = next(i for i, line in enumerate(lines) if "end subroutine foo" in line)
+        b = next(i for i, line in enumerate(lines) if "pure function bar" in line)
         assert lines[a + 1 : b] == ["", ""]
 
 
@@ -378,16 +392,16 @@ class TestCommentIndentation:
         source = "subroutine foo()\n! doc\nimplicit none\nend subroutine foo\n"
         result = fmt(source)
         lines = result.splitlines()
-        comment_line = next(l for l in lines if "! doc" in l)
-        implicit_line = next(l for l in lines if "implicit none" in l)
+        comment_line = next(line for line in lines if "! doc" in line)
+        implicit_line = next(line for line in lines if "implicit none" in line)
         assert comment_line.index("!") == implicit_line.index("i")
 
     def test_comment_before_end_dedents(self):
         source = "if (x) then\n  y = 1\n  ! done\nend if\n"
         result = fmt(source)
         lines = result.splitlines()
-        comment_line = next(l for l in lines if "! done" in l)
-        end_line = next(l for l in lines if "end if" in l)
+        comment_line = next(line for line in lines if "! done" in line)
+        end_line = next(line for line in lines if "end if" in line)
         assert len(comment_line) - len(comment_line.lstrip()) == len(end_line) - len(
             end_line.lstrip()
         )
@@ -396,8 +410,8 @@ class TestCommentIndentation:
         source = "! note\n\nx = 1\n"
         result = fmt(source)
         lines = result.splitlines()
-        comment_idx = next(i for i, l in enumerate(lines) if "! note" in l)
-        code_idx = next(i for i, l in enumerate(lines) if "x = 1" in l)
+        comment_idx = next(i for i, line in enumerate(lines) if "! note" in line)
+        code_idx = next(i for i, line in enumerate(lines) if "x = 1" in line)
         assert code_idx - comment_idx == 2  # blank line between them
 
 
@@ -411,7 +425,7 @@ class TestBlankLines:
         source = "x = 1\n\n\ny = 2\n"
         result = fmt(source)
         lines = result.splitlines()
-        blank_count = sum(1 for l in lines if l.strip() == "")
+        blank_count = sum(1 for line in lines if line.strip() == "")
         assert blank_count >= 2
 
     def test_blank_lines_not_added(self):
@@ -424,7 +438,10 @@ class TestArgListExpansion:
     """One-argument-per-line explosion for long parenthesised argument lists."""
 
     def test_long_call_explodes(self):
-        src = "call some_subroutine(argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+        src = (
+            "call some_subroutine("
+            "argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+        )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         # Opening line ends with &
@@ -448,23 +465,34 @@ class TestArgListExpansion:
     def test_single_arg_not_exploded(self):
         # Only one argument — no comma, so explosion does not apply.
         # The greedy splitter is used instead; no ", &" continuation lines appear.
-        src = "x = some_very_long_function_name(some_very_long_argument_name_that_makes_it_too_long)\n"
+        src = (
+            "x = some_very_long_function_name("
+            "some_very_long_argument_name_that_makes_it_too_long)\n"
+        )
         result = fmt(src, line_length=60)
         assert ", &" not in result
 
     def test_if_condition_not_exploded(self):
         # Control-flow parens must never be exploded
-        src = "if (alpha .and. beta .and. gamma .and. delta .and. epsilon) then\n  x = 1\nend if\n"
+        src = (
+            "if (alpha .and. beta .and. gamma .and. delta .and. epsilon) then\n"
+            "  x = 1\n"
+            "end if\n"
+        )
         result = fmt(src, line_length=40)
         assert "( &" not in result
 
     def test_function_definition_explodes(self):
-        src = "function compute(alpha_in, beta_in, gamma_in, delta_in) result(out)\n  out = 0.0\nend function compute\n"
+        src = (
+            "function compute(alpha_in, beta_in, gamma_in, delta_in) result(out)\n"
+            "  out = 0.0\n"
+            "end function compute\n"
+        )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert lines[0].startswith("function compute(") and lines[0].endswith(" &")
         # Closing ) with result clause at original indent, on its own line
-        close_line = next(l for l in lines if l.startswith(") result"))
+        close_line = next(line for line in lines if line.startswith(") result"))
         assert close_line == ") result(out)"
 
     def test_trailing_comment_on_close_line(self):
@@ -493,7 +521,10 @@ class TestArgListExpansion:
         assert any(".or. this%is_keyword_present(" in line for line in lines[1:])
 
     def test_expanded_is_idempotent(self):
-        src = "call some_subroutine(argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+        src = (
+            "call some_subroutine("
+            "argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+        )
         once = fmt(src, line_length=60)
         twice = fmt(once, line_length=60)
         assert once == twice
@@ -520,8 +551,10 @@ class TestStringHandling:
         # After normalisation the merged string may be long; the formatter must
         # still respect line_length via arg-list explosion.
         src = (
-            "call output%error_msg('Failed to ' // task // ' stream file (a0), status is &\n"
-            "&(i0) and error message is: ' // trim(io_message), chars = [this%get_name()], "
+            "call output%error_msg("
+            "'Failed to ' // task // ' stream file (a0), status is &\n"
+            "&(i0) and error message is: ' // trim(io_message), "
+            "chars = [this%get_name()], "
             "ints = [io_status])\n"
         )
         result = fmt(src, line_length=90)
@@ -558,37 +591,40 @@ class TestStringHandling:
         src = 'call log(level, "' + "x" * 70 + '")\n'
         result = fmt(src, line_length=60)
         lines = result.splitlines()
-        level_line = next(l for l in lines if "level" in l)
+        level_line = next(line for line in lines if "level" in line)
         assert level_line.rindex("&") < 60
 
 
 class TestLongArgContinuation:
-    """Long individual arguments inside an exploded list are split with greedy continuation."""
+    """Long individual arguments inside an exploded list use greedy continuation."""
 
     def test_long_arg_split_with_continuation(self):
         # The second argument is a long expression that exceeds the line limit.
-        src = "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
+        src = (
+            "call foo(short, alpha_var + beta_var + gamma_var + "
+            "delta_var + epsilon_var, other)\n"
+        )
         result = fmt(src, line_length=40)
         lines = result.splitlines()
         # The long argument must be split across multiple lines
         assert (
             sum(
                 1
-                for l in lines
-                if "alpha_var" in l
-                or "beta_var" in l
-                or "gamma_var" in l
-                or "delta_var" in l
-                or "epsilon_var" in l
+                for line in lines
+                if "alpha_var" in line
+                or "beta_var" in line
+                or "gamma_var" in line
+                or "delta_var" in line
+                or "epsilon_var" in line
             )
             > 1
         )
         # Continuation lines for the long arg are at a deeper indent than the other args
         arg_lines = [
-            l
-            for l in lines
+            line
+            for line in lines
             if any(
-                v in l
+                v in line
                 for v in (
                     "alpha_var",
                     "beta_var",
@@ -598,11 +634,14 @@ class TestLongArgContinuation:
                 )
             )
         ]
-        indents = [len(l) - len(l.lstrip()) for l in arg_lines]
+        indents = [len(line) - len(line.lstrip()) for line in arg_lines]
         assert max(indents) > min(indents)  # deeper lines exist
 
     def test_long_arg_all_lines_end_with_continuation(self):
-        src = "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
+        src = (
+            "call foo(short, alpha_var + beta_var + gamma_var + "
+            "delta_var + epsilon_var, other)\n"
+        )
         result = fmt(src, line_length=40)
         lines = result.splitlines()
         # Every line except the closing ) must end with ' &'
@@ -618,7 +657,9 @@ class TestLongArgContinuation:
         lines = result.splitlines()
         # Find all lines containing parts of the long arg expression
         expr_lines = [
-            l for l in lines if any(t in l for t in ("alpha_beta", "epsilon_zeta"))
+            line
+            for line in lines
+            if any(t in line for t in ("alpha_beta", "epsilon_zeta"))
         ]
         # Only the last piece of the expression should have a comma
         last = expr_lines[-1]
@@ -629,46 +670,65 @@ class TestLongArgContinuation:
             assert "," not in line.rstrip(" &")
 
     def test_long_arg_continuation_idempotent(self):
-        src = "call foo(short, alpha_var + beta_var + gamma_var + delta_var + epsilon_var, other)\n"
+        src = (
+            "call foo(short, alpha_var + beta_var + gamma_var + "
+            "delta_var + epsilon_var, other)\n"
+        )
         once = fmt(src, line_length=40)
         twice = fmt(once, line_length=40)
         assert once == twice
 
 
 class TestStringSplittingInArgList:
-    """Long string literals inside an exploded arg list are split with in-string continuation."""
+    """Long string literals inside an exploded arg list use in-string continuation."""
 
     def test_long_string_arg_split(self):
-        src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', other)\n"
+        src = (
+            "call foo("
+            "short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', "
+            "other)\n"
+        )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert all(len(line) <= 60 for line in lines)
         # In-string continuation: a line ends with bare & (no space before it)
         assert any(
-            l.rstrip().endswith("&") and not l.rstrip().endswith(" &") for l in lines
+            line.rstrip().endswith("&")
+            and not line.rstrip().endswith(" &")
+            for line in lines
         )
 
     def test_long_string_arg_idempotent(self):
-        src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', other)\n"
+        src = (
+            "call foo("
+            "short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', "
+            "other)\n"
+        )
         once = fmt(src, line_length=60)
         twice = fmt(once, line_length=60)
         assert once == twice
 
     def test_long_string_last_arg_split(self):
-        src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\n"
+        src = (
+            "call foo("
+            "short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\n"
+        )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert all(len(line) <= 60 for line in lines)
 
     def test_short_args_alignment_unaffected(self):
         # Short args must still be aligned; the long string must not dominate.
-        src = "call foo(a, b, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', c)\n"
+        src = (
+            "call foo(a, b, "
+            "'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', c)\n"
+        )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         # Lines for 'a', 'b', and 'c' should all end with ' &' (statement continuation)
-        a_line = next(l for l in lines if l.lstrip().startswith("a,"))
-        b_line = next(l for l in lines if l.lstrip().startswith("b,"))
-        c_line = next(l for l in lines if l.lstrip().startswith("c"))
+        a_line = next(line for line in lines if line.lstrip().startswith("a,"))
+        b_line = next(line for line in lines if line.lstrip().startswith("b,"))
+        c_line = next(line for line in lines if line.lstrip().startswith("c"))
         assert a_line.endswith(" &")
         assert b_line.endswith(" &")
         assert c_line.endswith(" &")
@@ -679,18 +739,25 @@ class TestStringSplitting:
 
     def test_long_string_assignment_split(self):
         # A string literal too long to fit on one line must be split.
-        src = "description = 'A Davidson solver for finding eigenvalues of a large Hermitian matrix'\n"
+        src = (
+            "description = "
+            "'A Davidson solver for finding eigenvalues of a large Hermitian matrix'\n"
+        )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert all(len(line) <= 60 for line in lines)
-        # In-string continuation: first line ends with " &", continuation starts with "&"
-        string_lines = [l for l in lines if "'" in l or "&" in l]
-        assert any(l.endswith(" &") for l in string_lines)
-        assert any(l.lstrip().startswith("&") for l in string_lines)
+        # In-string continuation: first line ends with " &",
+        # continuation starts with "&".
+        string_lines = [line for line in lines if "'" in line or "&" in line]
+        assert any(line.endswith(" &") for line in string_lines)
+        assert any(line.lstrip().startswith("&") for line in string_lines)
 
     def test_long_string_preserves_content(self):
         # Content must be reconstructed identically when formatted again.
-        src = "description = 'A Davidson solver for finding eigenvalues of a large Hermitian matrix'\n"
+        src = (
+            "description = "
+            "'A Davidson solver for finding eigenvalues of a large Hermitian matrix'\n"
+        )
         result = fmt(src, line_length=60)
         # Re-formatting must produce the same output (idempotency).
         twice = fmt(result, line_length=60)
