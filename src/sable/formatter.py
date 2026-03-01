@@ -536,6 +536,7 @@ _LOW_PRECEDENCE_SPLIT_OPS: frozenset[TokenKind] = frozenset(
         TokenKind.OP_NEQV,
         TokenKind.OP_PLUS,
         TokenKind.OP_MINUS,
+        TokenKind.OP_SLASH,
         TokenKind.OP_CONCAT,
     }
 )
@@ -940,6 +941,28 @@ def _try_expand_arg_list(
     # call-like argument lists. Prefer keeping them compact and wrapping RHS.
     if _is_lhs_subscript_paren_group(body, open_idx, close_idx):
         return None
+
+    # If the selected parenthesised segment is followed by a top-level binary
+    # operator, expression-level splitting is usually clearer than exploding
+    # this list first (e.g. `f(a, b) / g(...)`).
+    suffix_depth = 0
+    for tok in body[close_idx + 1 :]:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            suffix_depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            suffix_depth = max(0, suffix_depth - 1)
+        elif suffix_depth == 0 and tok.kind in (
+            TokenKind.OP_SLASH,
+            TokenKind.OP_STAR,
+            TokenKind.OP_PLUS,
+            TokenKind.OP_MINUS,
+            TokenKind.OP_CONCAT,
+            TokenKind.OP_AND,
+            TokenKind.OP_OR,
+            TokenKind.OP_EQV,
+            TokenKind.OP_NEQV,
+        ):
+            return None
 
     # Require at least one top-level comma (two or more arguments)
     depth = 0

@@ -1002,7 +1002,18 @@ class TestArgListExpansion:
         result = fmt(src)
         lines = result.splitlines()
         assert not any("t2bar(a, i, b, &" in line for line in lines)
-        assert any(line.rstrip().endswith("j) &") for line in lines)
+        assert any(line.rstrip().endswith("j) / &") for line in lines)
+
+    def test_operator_split_preferred_over_exploding_call_before_division(self):
+        src = (
+            "internal_fraction = get_l2_norm(X_internal, wf%n_cc2_v * wf%n_cc2_o) / "
+            "get_l2_norm(X, wf%n_es_amplitudes)\n"
+        )
+        result = fmt(src, line_length=70)
+        lines = result.splitlines()
+        assert not any("get_l2_norm( &" in line for line in lines)
+        assert lines[0].rstrip().endswith(") &")
+        assert any(line.lstrip().startswith("/ get_l2_norm(") for line in lines[1:])
 
 
 class TestStringHandling:
