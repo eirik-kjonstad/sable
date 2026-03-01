@@ -10,6 +10,57 @@ import click
 from . import __version__
 from .formatter import DEFAULT_CONFIG, FormatConfig, format_source
 
+# ── Output helpers ────────────────────────────────────────────────────────────
+
+def _sym(char: str, **style) -> str:
+    return click.style(char, **style)
+
+SYM_OK      = _sym("✓", fg="green")
+SYM_CHANGED = _sym("◆", fg="yellow", bold=True)
+SYM_SKIP    = _sym("~", fg="yellow")
+SYM_ERR     = _sym("✗", fg="red", bold=True)
+
+
+def _fmt_label(label: str) -> str:
+    return click.style(label, bold=True)
+
+
+def _summary(n_changed: int, n_unchanged: int, n_errors: int, check: bool) -> str:
+    parts: list[str] = []
+
+    if check:
+        if n_changed:
+            parts.append(click.style(
+                f"{n_changed} file{'s' if n_changed != 1 else ''} would be reformatted",
+                fg="yellow", bold=True,
+            ))
+        if n_unchanged:
+            parts.append(click.style(
+                f"{n_unchanged} already formatted",
+                fg="green",
+            ))
+    else:
+        if n_changed:
+            parts.append(click.style(
+                f"{n_changed} file{'s' if n_changed != 1 else ''} reformatted",
+                fg="yellow", bold=True,
+            ))
+        if n_unchanged:
+            parts.append(click.style(
+                f"{n_unchanged} unchanged",
+                fg="green",
+            ))
+
+    if n_errors:
+        parts.append(click.style(
+            f"{n_errors} error{'s' if n_errors != 1 else ''}",
+            fg="red", bold=True,
+        ))
+
+    return ", ".join(parts) + "."
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
 
 def _make_config(
     line_length: int,
@@ -26,6 +77,8 @@ def _make_config(
         normalize_operators=not no_normalize_operators,
     )
 
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
 
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, "-V", "--version")
@@ -125,7 +178,6 @@ def main(
     sources: list[tuple[str, Path | None]] = []
 
     if not files:
-        # Read from stdin
         source = sys.stdin.read()
         path = Path(stdin_filename) if stdin_filename else None
         sources.append((source, path))
@@ -141,14 +193,17 @@ def main(
 
     any_changed = False
     exit_code = 0
+    n_changed = n_unchanged = n_errors = 0
+    stdin_mode = False
 
     for source, path in sources:
         label = str(path) if path else "<stdin>"
         try:
             formatted = format_source(source, cfg)
         except Exception as exc:  # noqa: BLE001
-            click.echo(f"error: {label}: {exc}", err=True)
+            click.echo(f"{SYM_ERR} {_fmt_label(label)}: {exc}", err=True)
             exit_code = 123
+            n_errors += 1
             continue
 
         changed = formatted != source
@@ -167,18 +222,29 @@ def main(
                 click.echo("".join(delta), nl=False)
         elif check:
             if changed:
-                click.echo(f"would reformat {label}")
+                click.echo(f"{SYM_SKIP} {_fmt_label(label)}")
                 any_changed = True
+                n_changed += 1
+            else:
+                click.echo(f"{SYM_OK} {click.style(label, dim=True)}")
+                n_unchanged += 1
         else:
             if path and str(path) != "-":
                 if changed:
                     path.write_text(formatted, encoding="utf-8")
-                    click.echo(f"reformatted {label}")
+                    click.echo(f"{SYM_CHANGED} {_fmt_label(label)}")
+                    n_changed += 1
                 else:
-                    click.echo(f"{label} already formatted")
+                    click.echo(f"{SYM_OK} {click.style(label, dim=True)}")
+                    n_unchanged += 1
             else:
-                # Stdin mode: write to stdout
+                stdin_mode = True
                 click.echo(formatted, nl=False)
+
+    if not diff and not stdin_mode and (n_changed + n_unchanged + n_errors) > 0:
+        click.echo()
+        click.echo(click.style("All done! ", fg="cyan", bold=True) +
+                   _summary(n_changed, n_unchanged, n_errors, check))
 
     if check and any_changed:
         exit_code = 1
