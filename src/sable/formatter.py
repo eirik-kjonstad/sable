@@ -1162,7 +1162,16 @@ def render_logical_line(
                     for frag in frags[1:-1]:
                         lines.append(frag)
                     if remaining:
-                        lines.append(frags[-1] + " &")
+                        if (
+                            remaining[0].kind == TokenKind.COMMA
+                            and len(frags[-1]) + 3 <= cfg.line_length
+                        ):
+                            # Keep "," with the preceding fragment to avoid
+                            # leading-comma continuation lines.
+                            lines.append(frags[-1] + ", &")
+                            remaining = remaining[1:]
+                        else:
+                            lines.append(frags[-1] + " &")
                         current_indent = continuation_indent
                     else:
                         tail = " &" if force_trailing_continuation else ""

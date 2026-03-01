@@ -1069,6 +1069,22 @@ class TestStringHandling:
         level_line = next(line for line in lines if "level" in line)
         assert level_line.rindex("&") < 60
 
+    def test_long_string_split_does_not_leave_leading_comma_next_line(self):
+        src = (
+            "citation(implementation = 'Diagonal basis TD-EOM-CC', "
+            "journal = 'Phys. Rev. A', &\n"
+            "title_ = &\n"
+            "'Simulating weak-field attosecond processes with a Lanczos reduced basis "
+            "approach to time-&\n"
+            "&dependent equation-of-motion coupled-cluster theory' &\n"
+            ", volume = '105', issue = '2', pages = '023103', year = '2022'\n"
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        assert not any(line.lstrip().startswith(",") for line in lines)
+        assert any(line.rstrip().endswith("', &") for line in lines)
+        assert any(line.lstrip().startswith("volume = '105'") for line in lines)
+
 
 class TestLongArgContinuation:
     """Long individual arguments inside an exploded list use greedy continuation."""
