@@ -27,5 +27,5 @@ jobs:
       - name: Check formatting
         run: black --check src tests
 
-      - name: Run tests
-        run: pytest
+      - name: Run tests with coverage gate
+        run: pytest --cov=src/sable --cov-report=term-missing --cov-fail-under=65
