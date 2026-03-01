@@ -28,8 +28,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "black>=24.0",
+    "pre-commit>=3.7",
     "pytest>=8.0",
     "pytest-cov",
+    "ruff>=0.5",
 ]
 
 [project.scripts]
@@ -40,6 +42,13 @@ packages = ["src/sable"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
 
 [tool.hatch.build]
 sources = ["src"]

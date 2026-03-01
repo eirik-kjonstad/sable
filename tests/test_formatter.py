@@ -717,6 +717,43 @@ class TestStringSplitting:
         assert "&" not in result
 
 
+class TestColonSpacing:
+    """Colon spacing: no space before ':', space after ':' only at top level."""
+
+    def test_use_only_colon_has_space_after(self):
+        result = fmt("use module_name, only: routine_name")
+        assert "only: routine_name" in result
+
+    def test_use_only_no_space_before_colon(self):
+        result = fmt("use module_name, only: routine_name")
+        assert "only :" not in result
+
+    def test_use_only_multiple_names(self):
+        result = fmt("use module_name, only: routine_a, routine_b")
+        assert "only: routine_a" in result
+
+    def test_array_slice_no_space_around_colon(self):
+        result = fmt("x = a(1:n)")
+        assert "1:n" in result
+        assert "1 :" not in result
+        assert ": n" not in result
+
+    def test_array_slice_two_ranges(self):
+        result = fmt("x = a(1:n, 2:m)")
+        assert "1:n" in result
+        assert "2:m" in result
+
+    def test_array_slice_step(self):
+        result = fmt("x = a(1:n:2)")
+        assert "1:n:2" in result
+
+    def test_use_only_colon_idempotent(self):
+        source = "use module_name, only: routine_name\n"
+        once = fmt(source)
+        twice = fmt(once)
+        assert once == twice
+
+
 class TestIdempotency:
     """Formatting the output of format_source should produce the same result."""
 

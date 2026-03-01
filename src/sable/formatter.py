@@ -197,8 +197,14 @@ def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
 # ---------------------------------------------------------------------------
 
 
-def _needs_space_before(prev: Token | None, curr: Token) -> bool:
-    """Return True if a space is required before *curr*."""
+def _needs_space_before(prev: Token | None, curr: Token, paren_depth: int = 0) -> bool:
+    """Return True if a space is required before *curr*.
+
+    *paren_depth* is the number of currently open parentheses/brackets.  It is
+    used to distinguish a slice colon (inside parens, no space either side) from
+    a top-level colon such as ``only:`` in a USE statement or a construct label
+    (space after, no space before).
+    """
     if prev is None:
         return False
     pk, ck = prev.kind, curr.kind
@@ -242,9 +248,13 @@ def _needs_space_before(prev: Token | None, curr: Token) -> bool:
     if pk == TokenKind.DOUBLE_COLON or ck == TokenKind.DOUBLE_COLON:
         return True
 
-    # No space before colon in slice (heuristic: adjacent to integers/names)
-    if ck == TokenKind.COLON or pk == TokenKind.COLON:
+    # No space before ':' in any context.
+    if ck == TokenKind.COLON:
         return False
+    # Space after ':' only at the top level (USE only:, construct labels, …).
+    # Inside parens/brackets ':' is a slice/subscript operator — no space.
+    if pk == TokenKind.COLON:
+        return paren_depth == 0
 
     # Default: space between distinct tokens
     if pk not in (TokenKind.LPAREN, TokenKind.LBRACKET) and ck not in (
@@ -435,10 +445,15 @@ def _render_tokens(tokens: list[Token]) -> str:
     """Render a token list to a string, inserting spaces via the spacing rules."""
     parts: list[str] = []
     prev: Token | None = None
+    depth = 0
     for tok in tokens:
-        if _needs_space_before(prev, tok):
+        if _needs_space_before(prev, tok, depth):
             parts.append(" ")
         parts.append(tok.text)
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
         prev = tok
     return "".join(parts)
 
@@ -523,6 +538,7 @@ def _greedy_split_arg(
     lines: list[str] = []
     remaining = list(arg_toks)
     current_indent = first_indent
+    current_depth = 0  # paren depth carried across physical-line splits
 
     while remaining:
         budget = cfg.line_length - len(current_indent) - 2  # room for ' &'
@@ -530,9 +546,10 @@ def _greedy_split_arg(
         prev: Token | None = None
         char_count = 0
         split_at = len(remaining)
+        depth = current_depth
 
         for idx, tok in enumerate(remaining):
-            space = " " if _needs_space_before(prev, tok) else ""
+            space = " " if _needs_space_before(prev, tok, depth) else ""
             token_str = space + tok.text
             if char_count + len(token_str) > budget and idx > 0:
                 adjusted = _avoid_percent_split(remaining, idx)
@@ -540,7 +557,17 @@ def _greedy_split_arg(
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
+            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+                depth += 1
+            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+                depth = max(0, depth - 1)
             prev = tok
+
+        for tok in remaining[:split_at]:
+            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+                current_depth += 1
+            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+                current_depth = max(0, current_depth - 1)
 
         chunk = "".join(parts_acc[:split_at])
         remaining = remaining[split_at:]
@@ -780,6 +807,7 @@ def render_logical_line(
     remaining = list(body)
     current_indent = indent
     continuation_indent = indent + " " * cfg.indent_width
+    current_depth = 0  # paren depth carried across physical-line splits
 
     while remaining:
         # If the first remaining token is a STRING too long for the current
@@ -810,9 +838,10 @@ def render_logical_line(
         prev2: Token | None = None
         char_count = 0
         split_at = len(remaining)  # default: all remaining tokens
+        depth = current_depth
 
         for idx, tok in enumerate(remaining):
-            space = " " if _needs_space_before(prev2, tok) else ""
+            space = " " if _needs_space_before(prev2, tok, depth) else ""
             token_str = space + tok.text
             if char_count + len(token_str) > budget and idx > 0:
                 adjusted = _avoid_percent_split(remaining, idx)
@@ -820,7 +849,17 @@ def render_logical_line(
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
+            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+                depth += 1
+            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+                depth = max(0, depth - 1)
             prev2 = tok
+
+        for tok in remaining[:split_at]:
+            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+                current_depth += 1
+            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+                current_depth = max(0, current_depth - 1)
 
         chunk = "".join(parts_acc[:split_at])
         remaining = remaining[split_at:]

@@ -14,6 +14,19 @@ that code review can focus on logic rather than style debates.
 pip install sable
 ```
 
+## Development checks
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+pre-commit run --all-files
+```
+
+Pre-commit runs:
+
+- `black` (formatting)
+- `ruff` (lint-only; no Ruff formatting)
+
 ## Usage
 
 ```bash
@@ -230,7 +243,7 @@ flags are:
 - [ ] `USE` statement sorting and deduplication
 - [ ] `IMPLICIT NONE` insertion
 - [ ] Fixed-form (Fortran 77) source support
-- [ ] Pre-commit hook integration
+- [x] Pre-commit hook integration
 
 ## Name
 
