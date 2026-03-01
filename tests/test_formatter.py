@@ -486,6 +486,39 @@ class TestDirectives:
         assert if_d_line.startswith("      ")
 
 
+class TestFormatControl:
+    def test_sable_off_on_region_is_preserved_verbatim(self):
+        source = (
+            "subroutine s\n"
+            "! sable: off\n"
+            "CALL   UNTOUCHED( A,B )\n"
+            "x=1\n"
+            "! sable: on\n"
+            "call bar( a,b)\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+
+        off_idx = lines.index("! sable: off")
+        on_idx = lines.index("! sable: on")
+        assert lines[off_idx + 1] == "CALL   UNTOUCHED( A,B )"
+        assert lines[off_idx + 2] == "x=1"
+        assert lines[on_idx + 1].strip() == "call bar(a, b)"
+
+    def test_sable_off_without_on_leaves_rest_unformatted(self):
+        source = (
+            "subroutine s\n"
+            "! sable: off\n"
+            "CALL   UNTOUCHED( A,B )\n"
+            "x=1\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        assert "CALL   UNTOUCHED( A,B )" in result
+        assert "x=1" in result
+
+
 class TestContinuationWithComments:
     def test_no_standalone_ampersand_before_comment_block_in_indented_data(self):
         source = (
@@ -905,6 +938,17 @@ class TestArgListExpansion:
         once = fmt(src, line_length=60)
         twice = fmt(once, line_length=60)
         assert once == twice
+
+    def test_multiline_call_stays_exploded_when_it_would_fit(self):
+        src = "call foo( &\n" "   alpha, &\n" "   beta,  &\n" "   gamma  &\n" ")\n"
+        result = fmt(src, line_length=120)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert lines[0].startswith("call foo(") and lines[0].endswith(" &")
+        assert any(line.lstrip().startswith("alpha,") for line in lines)
+        assert any(line.lstrip().startswith("beta,") for line in lines)
+        assert any(line.lstrip().startswith("gamma") for line in lines)
+        assert lines[-1] == ")"
 
 
 class TestStringHandling:

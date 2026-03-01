@@ -525,6 +525,9 @@ _DIRECTIVE_BRANCH_RE = re.compile(
 )
 """Match branch-forming preprocessor directives."""
 
+_FORMAT_CONTROL_RE = re.compile(r"^\s*!\s*sable:\s*(off|on)\b", flags=re.IGNORECASE)
+"""Match formatting control comments: `! sable: off` / `! sable: on`."""
+
 
 # ---------------------------------------------------------------------------
 # Line rendering
@@ -910,11 +913,47 @@ def _try_expand_arg_list(
     return lines
 
 
+def _prefer_exploded_arg_list(tokens: list[Token]) -> bool:
+    """Return True when an argument list was authored across multiple lines.
+
+    This is Sable's equivalent of Black's "magic trailing comma": if the user has
+    already made an argument list multiline, keep it exploded even when it would
+    fit within the configured line length.
+    """
+    paren_span = _find_outermost_paren_group(tokens)
+    if paren_span is None:
+        return False
+
+    open_idx, close_idx = paren_span
+    inner = tokens[open_idx + 1 : close_idx]
+
+    depth = 0
+    has_top_comma = False
+    for tok in inner:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth -= 1
+        elif tok.kind == TokenKind.COMMA and depth == 0:
+            has_top_comma = True
+            break
+    if not has_top_comma:
+        return False
+
+    paren_lines = {
+        tok.line
+        for tok in tokens[open_idx : close_idx + 1]
+        if tok.kind != TokenKind.COMMENT
+    }
+    return len(paren_lines) > 1
+
+
 def render_logical_line(
     tokens: list[Token],
     indent: str,
     cfg: FormatConfig,
     continuation_step: int | None = None,
+    prefer_exploded_arg_list: bool = False,
 ) -> list[str]:
     """Render a logical line (already normalised) to one or more physical lines.
 
@@ -945,6 +984,14 @@ def render_logical_line(
     comment_str = ("  " + comment.text) if comment else ""
     trailing = " &" if force_trailing_continuation else ""
     full_line = indent + line_body + trailing + comment_str
+
+    # Preserve manually multiline argument lists even when they fit on one line.
+    if prefer_exploded_arg_list:
+        expanded = _try_expand_arg_list(body, comment, indent, cfg)
+        if expanded is not None:
+            if force_trailing_continuation and expanded:
+                expanded[-1] = expanded[-1] + " &"
+            return expanded
 
     if len(full_line) <= cfg.line_length:
         return [full_line]
@@ -1154,6 +1201,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         cfg = DEFAULT_CONFIG
 
     tokens = tokenize(source)
+    raw_lines = source.splitlines()
     tracker = IndentTracker(cfg.indent_width)
     output_lines: list[str] = []
 
@@ -1197,14 +1245,55 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
     continuation_chain_indent: str | None = None
     saw_directive_after_continuation = False
     branch_base_levels: list[int] = []
+    format_enabled = True
+    next_line_no = 1
 
     def _has_explicit_trailing_continuation(line_tokens: list[Token]) -> bool:
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         return bool(non_comment and non_comment[-1].kind == TokenKind.CONTINUATION)
 
     for logical_line in iter_logical_lines(tokens):
+        if logical_line:
+            start_line = min(tok.line for tok in logical_line)
+            end_line = max(tok.line for tok in logical_line)
+            next_line_no = end_line + 1
+        else:
+            start_line = next_line_no
+            end_line = next_line_no
+            next_line_no += 1
+
+        if start_line <= len(raw_lines):
+            raw_span = raw_lines[start_line - 1 : min(end_line, len(raw_lines))]
+        else:
+            raw_span = [""]
+
         logical_line = merge_end_keywords(logical_line, cfg)
         normalised = [normalise(t) for t in logical_line]
+
+        first_raw = raw_span[0] if raw_span else ""
+        control_match = _FORMAT_CONTROL_RE.match(first_raw)
+        if format_enabled and control_match and control_match.group(1).lower() == "off":
+            flush_pending(tracker.indent())
+            output_lines.extend(raw_span)
+            format_enabled = False
+            continuation_chain_indent = None
+            saw_directive_after_continuation = False
+            last_was_end_routine = False
+            continue
+
+        if not format_enabled:
+            output_lines.extend(raw_span)
+            non_comment_disabled = [
+                t for t in normalised if t.kind != TokenKind.COMMENT
+            ]
+            if non_comment_disabled:
+                tracker.process_line(normalised)
+            if control_match and control_match.group(1).lower() == "on":
+                format_enabled = True
+            continuation_chain_indent = None
+            saw_directive_after_continuation = False
+            last_was_end_routine = False
+            continue
 
         # Preprocessor directives: flush buffer at current level, emit at column 0
         if normalised and normalised[0].kind == TokenKind.DIRECTIVE:
@@ -1255,9 +1344,14 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
             flush_pending(indent)
 
         split = _split_single_line_if(normalised)
+        prefer_exploded = _prefer_exploded_arg_list(normalised)
         if split is not None:
             physical = render_logical_line(
-                normalised, indent, cfg, continuation_step=continuation_step
+                normalised,
+                indent,
+                cfg,
+                continuation_step=continuation_step,
+                prefer_exploded_arg_list=prefer_exploded,
             )
             if len(physical) == 1:
                 # Fits on one line — keep the action on the same line as the if.
@@ -1266,7 +1360,10 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
                 # Too long — split at the if/action boundary.
                 cond_tokens, action_tokens = split
                 cond_lines = render_logical_line(
-                    cond_tokens, indent, cfg, continuation_step=continuation_step
+                    cond_tokens,
+                    indent,
+                    cfg,
+                    continuation_step=continuation_step,
                 )
                 cond_lines[-1] += " &"
                 action_indent = indent + " " * cfg.indent_width
@@ -1275,7 +1372,11 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
                 output_lines.extend(action_lines)
         else:
             physical = render_logical_line(
-                normalised, indent, cfg, continuation_step=continuation_step
+                normalised,
+                indent,
+                cfg,
+                continuation_step=continuation_step,
+                prefer_exploded_arg_list=prefer_exploded,
             )
             output_lines.extend(physical)
 

@@ -163,6 +163,10 @@ call compute(    &
 )
 ```
 
+**Sticky multiline argument lists.** If an argument list is already written
+across multiple physical lines in the input, Sable keeps it exploded even when
+it would fit on one line under the configured line length.
+
 **String literal splitting.** String literals that are too long to fit on one
 physical line are split using Fortran in-string continuation:
 
@@ -205,6 +209,11 @@ comments always align with the code they precede.
 Lines beginning with `#` (e.g. `#ifdef`, `#define`, `#endif`) are passed
 through unchanged and always emitted at **column 0**, regardless of the
 surrounding indentation level.
+
+### Formatting control comments
+
+Use `! sable: off` and `! sable: on` to disable formatting for a region.
+Everything inside that region is emitted verbatim.
 
 ### Semicolons
 
