@@ -103,3 +103,11 @@ class TestContinuation:
         source = "x = 1\ny = 2"
         lines = list(iter_logical_lines(tokenize(source)))
         assert len(lines) == 2
+
+    def test_continuation_across_blank_line(self):
+        source = "if (x > 0) &\n\n  y = 1\n"
+        lines = list(iter_logical_lines(tokenize(source)))
+        assert len(lines) == 1
+        texts_in_line = [t.text for t in lines[0]]
+        assert "if" in texts_in_line
+        assert "y" in texts_in_line

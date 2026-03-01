@@ -168,6 +168,23 @@ def tokenize(source: str) -> list[Token]:
             tokens.append(Token(kind, lower if kind == TokenKind.KEYWORD else text, line, col))
             continue
 
+        if kind_name == "STRING":
+            # Fortran in-string continuation: '...\n...' with & markers.
+            # The STRING regex matches [^'] which includes \n, so strings with
+            # in-string continuation (&\n...&) appear as one token with embedded
+            # newlines.  Normalise by stripping the continuation markers: the
+            # characters between the closing & and the resuming & (i.e. the
+            # newline and any surrounding whitespace) are NOT part of the string
+            # value per the Fortran standard, so removing them is semantically
+            # safe.  Update the line/column tracking for the consumed newlines.
+            if "\n" in text:
+                text = re.sub(r"&[ \t]*\n[ \t]*&", "", text)
+                line += m.group().count("\n")
+                last_nl = m.group().rfind("\n")
+                line_start = m.start() + last_nl + 1
+            tokens.append(Token(TokenKind.STRING, text, line, col))
+            continue
+
         if kind_name == "LOGICAL":
             tokens.append(Token(TokenKind.LOGICAL, text.upper(), line, col))
             continue
@@ -189,6 +206,7 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
     """
     current: list[Token] = []
     continued = False
+    saw_continuation_content = False
 
     i = 0
     while i < len(tokens):
@@ -200,6 +218,15 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
             return
 
         if tok.kind == TokenKind.CONTINUATION:
+            # Leading continuation marker on a continued physical line.
+            if (
+                continued
+                and i > 0
+                and tokens[i - 1].kind == TokenKind.NEWLINE
+            ):
+                i += 1
+                continue
+
             # Look ahead: if the next non-whitespace on this physical line is
             # NEWLINE (or COMMENT then NEWLINE), this is a line continuation.
             j = i + 1
@@ -245,6 +272,7 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                 else:
                     # Normal continuation — join the next line into current
                     continued = True
+                    saw_continuation_content = False
                     i = j + 1  # skip continuation & and newline
                     # Consume optional leading & on next line
                     if i < len(tokens) and tokens[i].kind == TokenKind.CONTINUATION:
@@ -260,13 +288,14 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                     yield []  # blank line — preserve as empty logical line
                 current = []
             else:
-                # End of a continuation line: the logical line is now complete.
-                # Yield it here so that a following blank NEWLINE can be yielded
-                # as an empty logical line rather than being consumed by this one.
-                if current:
-                    yield current
-                    current = []
-            continued = False
+                # A blank line between a trailing '&' and continued content is
+                # allowed; keep waiting until we see content on a continuation line.
+                if saw_continuation_content:
+                    if current:
+                        yield current
+                        current = []
+                    continued = False
+                    saw_continuation_content = False
         elif tok.kind == TokenKind.SEMICOLON:
             # Semicolon acts as statement separator
             if current:
@@ -274,6 +303,8 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
             current = []
         else:
             current.append(tok)
+            if continued:
+                saw_continuation_content = True
 
         i += 1
 

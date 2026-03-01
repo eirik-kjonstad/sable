@@ -272,6 +272,20 @@ class TestSingleLineIf:
             action_idx = next(i for i, l in enumerate(lines) if "x = 1" in l)
             assert lines[action_idx + 1] == "", f"blank line missing in: {result!r}"
 
+    def test_existing_if_continuation_with_blank_line_kept(self):
+        src = (
+            "if (norm2(real(residual)) .le. this%implicit_threshold &\n"
+            "    .and. norm2(aimag(residual)) .le. this%implicit_threshold) &\n"
+            "\n"
+            "   converged = .true.\n"
+        )
+        result = fmt(src, line_length=80)
+        lines = result.splitlines()
+        converged_idx = next(i for i, l in enumerate(lines) if "converged = .TRUE." in l)
+        assert lines[converged_idx - 1].endswith(" &")
+        assert lines[converged_idx].strip() == "converged = .TRUE."
+        assert lines[converged_idx].startswith("   ")
+
 
 class TestRoutineSeparation:
     _base = (
@@ -427,6 +441,24 @@ class TestArgListExpansion:
         # Comment goes on the closing ) line
         assert lines[-1].startswith(")") and "! important" in lines[-1]
 
+    def test_close_suffix_respects_line_length(self):
+        src = (
+            "requested = this%is_keyword_present( &\n"
+            "   'freeze core',                    &\n"
+            "   'active space'                    &\n"
+            ") .or. this%is_keyword_present('freeze atom cores', 'active space') "
+            ".or. this%is_keyword_present('localized', 'active space') "
+            ".or. this%is_keyword_present('canonical', 'active space') "
+            ".or. this%is_keyword_present('plot hf active density', 'visualization') "
+            ".or. this%is_embedding_on() .or. "
+            "(this%requested_calculation(mlhf) .and. this%requested_cc_calculation())\n"
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        assert all(len(line) <= 100 for line in lines)
+        assert lines[0].endswith(" &")
+        assert any(".or. this%is_keyword_present(" in line for line in lines[1:])
+
     def test_expanded_is_idempotent(self):
         src = "call some_subroutine(argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
         once = fmt(src, line_length=60)
@@ -435,24 +467,52 @@ class TestArgListExpansion:
 
 
 class TestStringHandling:
-    """String literals must never be reformatted."""
+    """String literals: content is opaque, in-string continuations are normalised."""
 
-    def test_instring_continuation_preserved_single_arg(self):
-        # A string with Fortran & continuation inside must be output verbatim.
+    def test_instring_continuation_normalised(self):
+        # In-string continuation (&\n&) is stripped by the lexer; the formatter
+        # receives and emits a plain single-line string token.
         src = 'call log("Hello this is a string &\n&that continues on a new line")\n'
-        result = fmt(src, line_length=60)
-        assert '"Hello this is a string &' in result
-        assert "&that continues on a new line" in result
-        # The closing ) must appear on the last line, not pushed to its own line
-        # by the formatter's greedy splitter.
-        assert result.rstrip("\n").endswith('")')
+        result = fmt(src, line_length=120)
+        # The normalised string content is present without any & markers.
+        assert '"Hello this is a string that continues on a new line"' in result
 
-    def test_instring_continuation_preserved_multi_arg(self):
-        # When mixed with other args the whole statement is output verbatim.
-        src = 'call log(level, "Hello this is a string &\n&that continues")\n'
+    def test_instring_continuation_normalised_multi_arg(self):
+        # Normalisation works when the continued string is mixed with other args.
+        src = 'call log(level, "Hello &\n&there")\n'
+        result = fmt(src, line_length=120)
+        assert '"Hello there"' in result
+
+    def test_instring_continuation_multi_arg_respects_line_length(self):
+        # After normalisation the merged string may be long; the formatter must
+        # still respect line_length via arg-list explosion.
+        src = (
+            "call output%error_msg('Failed to ' // task // ' stream file (a0), status is &\n"
+            "&(i0) and error message is: ' // trim(io_message), chars = [this%get_name()], "
+            "ints = [io_status])\n"
+        )
+        result = fmt(src, line_length=90)
+        lines = result.splitlines()
+        # The normalised string content must appear (without & markers).
+        assert "status is (i0) and error message is: " in result
+        # Long call should be split at top-level arguments.
+        assert lines[0].endswith(" &")
+        assert any("chars = [this%get_name()]" in line for line in lines)
+        assert any("ints = [io_status]" in line for line in lines)
+        # Formatter must respect the configured limit for generated lines.
+        assert all(len(line) <= 90 for line in lines)
+
+    def test_instring_continuation_named_args(self):
+        # Named-keyword multi-arg call where one arg had an in-string continuation.
+        # After normalisation all args are single-line tokens.
+        src = (
+            "this%citation = citation(implementation = 'eT', "
+            "authors = 'Author One, &\n"
+            "&Author Two', year = 2020)\n"
+        )
         result = fmt(src, line_length=60)
-        assert '"Hello this is a string &' in result
-        assert "&that continues" in result
+        # The in-string continuation is normalised; the merged string appears.
+        assert "'Author One, Author Two'" in result
 
     def test_instring_continuation_idempotent(self):
         src = 'call log(level, "first part &\n&second part")\n'
@@ -525,6 +585,85 @@ class TestLongArgContinuation:
         once = fmt(src, line_length=40)
         twice = fmt(once, line_length=40)
         assert once == twice
+
+
+class TestStringSplittingInArgList:
+    """Long string literals inside an exploded arg list are split with in-string continuation."""
+
+    def test_long_string_arg_split(self):
+        src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', other)\n"
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        assert all(len(line) <= 60 for line in lines)
+        # In-string continuation: a line ends with bare & (no space before it)
+        assert any(l.rstrip().endswith("&") and not l.rstrip().endswith(" &") for l in lines)
+
+    def test_long_string_arg_idempotent(self):
+        src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', other)\n"
+        once = fmt(src, line_length=60)
+        twice = fmt(once, line_length=60)
+        assert once == twice
+
+    def test_long_string_last_arg_split(self):
+        src = "call foo(short, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz')\n"
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        assert all(len(line) <= 60 for line in lines)
+
+    def test_short_args_alignment_unaffected(self):
+        # Short args must still be aligned; the long string must not dominate.
+        src = "call foo(a, b, 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz', c)\n"
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        # Lines for 'a', 'b', and 'c' should all end with ' &' (statement continuation)
+        a_line = next(l for l in lines if l.lstrip().startswith("a,"))
+        b_line = next(l for l in lines if l.lstrip().startswith("b,"))
+        c_line = next(l for l in lines if l.lstrip().startswith("c"))
+        assert a_line.endswith(" &")
+        assert b_line.endswith(" &")
+        assert c_line.endswith(" &")
+
+
+class TestStringSplitting:
+    """Strings that exceed line_length are split with Fortran in-string continuation."""
+
+    def test_long_string_assignment_split(self):
+        # A string literal too long to fit on one line must be split.
+        src = "description = 'A Davidson solver for finding eigenvalues of a large Hermitian matrix'\n"
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        assert all(len(line) <= 60 for line in lines)
+        # In-string continuation: first line ends with " &", continuation starts with "&"
+        string_lines = [l for l in lines if "'" in l or "&" in l]
+        assert any(l.endswith(" &") for l in string_lines)
+        assert any(l.lstrip().startswith("&") for l in string_lines)
+
+    def test_long_string_preserves_content(self):
+        # Content must be reconstructed identically when formatted again.
+        src = "description = 'A Davidson solver for finding eigenvalues of a large Hermitian matrix'\n"
+        result = fmt(src, line_length=60)
+        # Re-formatting must produce the same output (idempotency).
+        twice = fmt(result, line_length=60)
+        assert result == twice
+
+    def test_long_string_as_sole_token(self):
+        # A string that is the very first (and only) token on a long line is split.
+        src = "x = 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz'\n"
+        result = fmt(src, line_length=40)
+        lines = result.splitlines()
+        assert all(len(line) <= 40 for line in lines)
+
+    def test_long_string_idempotent(self):
+        src = "x = 'abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz'\n"
+        once = fmt(src, line_length=40)
+        twice = fmt(once, line_length=40)
+        assert once == twice
+
+    def test_short_string_not_split(self):
+        src = "x = 'hello'\n"
+        result = fmt(src)
+        assert result.strip() == "x = 'hello'"
+        assert "&" not in result
 
 
 class TestIdempotency:

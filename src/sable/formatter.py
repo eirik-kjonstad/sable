@@ -350,25 +350,6 @@ class IndentTracker:
 # Line rendering
 # ---------------------------------------------------------------------------
 
-def _multiline_string_column(body: list[Token], indent: str) -> int:
-    """Return the column (0-based) of the opening delimiter of the first
-    multi-line STRING token found in *body*, rendered under *indent*.
-
-    This is used to align Fortran in-string continuation markers so they sit
-    directly under the opening quote character after re-indentation.
-    """
-    col = len(indent)
-    prev: Token | None = None
-    for tok in body:
-        if _needs_space_before(prev, tok):
-            col += 1
-        if tok.kind == TokenKind.STRING and "\n" in tok.text:
-            return col
-        col += len(tok.text)
-        prev = tok
-    return len(indent)
-
-
 def _render_tokens(tokens: list[Token]) -> str:
     """Render a token list to a string, inserting spaces via the spacing rules."""
     parts: list[str] = []
@@ -467,6 +448,75 @@ def _greedy_split_arg(
     return lines if lines else [first_indent + _render_tokens(arg_toks) + suffix]
 
 
+def _split_string_literal(
+    tok_text: str,
+    prefix_len: int,
+    cont_indent: str,
+    line_length: int,
+) -> list[str]:
+    """Split a too-long string literal using Fortran in-string continuation.
+
+    *tok_text*   — full STRING token text including surrounding quotes.
+    *prefix_len* — characters already used on the first physical line before
+                   this string (indent + preceding tokens).
+    *cont_indent* — indentation to use on continuation lines.
+    *line_length* — maximum physical line length.
+
+    Returns a list of fragments:
+      [0]    first fragment: ``quote + content_chunk + " &"``
+             (caller prepends the prefix for the first physical line)
+      [1:-1] complete middle lines: ``cont_indent + "&" + chunk + " &"``
+      [-1]   last line: ``cont_indent + "&" + chunk + closing_quote``
+
+    If the string already fits within the available space, returns
+    ``[tok_text]`` unchanged.
+    """
+    if len(tok_text) < 2:
+        return [tok_text]
+
+    quote = tok_text[0]       # ' or "
+    content = tok_text[1:-1]  # strip surrounding quotes
+
+    avail = line_length - prefix_len
+    # Need at least: quote(1) + one char + "&"(1)
+    first_content_max = avail - 2
+    if first_content_max <= 0 or avail >= len(tok_text):
+        return [tok_text]
+
+    # Content budget per continuation line:
+    #   middle: line_length - len(cont_indent) - "&"(1) - "&"(1) = - 2
+    #   last:   line_length - len(cont_indent) - "&"(1) - quote(1) = - 2
+    # (No space before the trailing & — space would become part of string value.)
+    mid_budget = line_length - len(cont_indent) - 2
+    last_budget = mid_budget
+    if mid_budget <= 0:
+        return [tok_text]
+
+    def _safe_pos(s: str, max_pos: int) -> int:
+        """Back up one if splitting here would cut through a doubled-quote escape."""
+        p = min(max_pos, len(s))
+        if 0 < p < len(s) and s[p - 1] == quote and s[p] == quote:
+            p -= 1
+        return p
+
+    frags: list[str] = []
+    remaining = content
+
+    p = _safe_pos(remaining, first_content_max)
+    frags.append(quote + remaining[:p] + "&")
+    remaining = remaining[p:]
+
+    while remaining:
+        if len(remaining) <= last_budget:
+            frags.append(cont_indent + "&" + remaining + quote)
+            break
+        p = _safe_pos(remaining, mid_budget)
+        frags.append(cont_indent + "&" + remaining[:p] + "&")
+        remaining = remaining[p:]
+
+    return frags if len(frags) > 1 else [tok_text]
+
+
 def _try_expand_arg_list(
     body: list[Token],
     comment: Token | None,
@@ -522,35 +572,62 @@ def _try_expand_arg_list(
     content_lines: list[str] = [indent + prefix_with_open]
 
     for i, arg_toks in enumerate(arg_groups):
-        arg_str = _render_tokens(arg_toks)
         is_last = (i == len(arg_groups) - 1)
         suffix = "" if is_last else ","
-        single_line = continuation_indent + arg_str + suffix
 
+        single_line = continuation_indent + _render_tokens(arg_toks) + suffix
         # + 2 reserves space for the trailing ' &' that will be appended later.
         if len(single_line) + 2 <= cfg.line_length:
             content_lines.append(single_line)
+        elif len(arg_toks) == 1 and arg_toks[0].kind == TokenKind.STRING:
+            # Single string arg too long: split using Fortran in-string continuation.
+            # In-string & must be the last character on the physical line — no space
+            # before it — so these lines cannot receive a statement & via the alignment
+            # loop below.  They are tagged by ending with "&" (no space) and emitted
+            # as-is; only the closing fragment (ends with the quote) participates in
+            # alignment and gets a statement " &".
+            frags = _split_string_literal(
+                arg_toks[0].text,
+                len(continuation_indent),
+                continuation_indent,   # continuation lines align with the opening quote
+                cfg.line_length,
+            )
+            if len(frags) > 1:
+                content_lines.append(continuation_indent + frags[0])  # ends with &
+                for frag in frags[1:-1]:
+                    content_lines.append(frag)                         # ends with &
+                content_lines.append(frags[-1] + suffix)               # ends with quote
+            else:
+                content_lines.append(single_line)
         else:
             split = _greedy_split_arg(
                 arg_toks, continuation_indent, arg_continuation_indent, suffix, cfg
             )
             content_lines.extend(split)
 
-    # Align & markers, but only consider lines that fit within line_length.
-    # A single very long string argument must not push the alignment column
-    # to an unreasonable position for all other (short) argument lines.
-    fitting = [len(l) for l in content_lines if len(l) <= cfg.line_length - 2]
-    align_width = max(fitting) if fitting else max(len(l) for l in content_lines)
+    # Align & markers.  Lines that end with a bare "&" are in-string continuation
+    # lines: they must NOT receive an additional statement "&" (invalid Fortran).
+    # Only lines that don't end with "&" participate in alignment.
+    non_raw = [l for l in content_lines if not l.endswith("&")]
+    fitting = [len(l) for l in non_raw if len(l) <= cfg.line_length - 2]
+    align_width = (max(fitting) if fitting
+                   else (max(len(l) for l in non_raw) if non_raw else 0))
     lines: list[str] = []
     for content in content_lines:
-        padding = " " * max(0, align_width - len(content))
-        lines.append(content + padding + " &")
+        if content.endswith("&"):
+            # In-string continuation: emit without adding a statement &
+            lines.append(content)
+        else:
+            padding = " " * max(0, align_width - len(content))
+            lines.append(content + padding + " &")
 
-    # Closing line: ) at original indent, with any suffix tokens (e.g. result(r))
-    # and the trailing comment (if any).
-    close_and_suffix = _render_tokens([body[close_idx]] + body[close_idx + 1:])
-    comment_str = ("  " + comment.text) if comment else ""
-    lines.append(indent + close_and_suffix + comment_str)
+    # Closing line(s): start with ')' at original indent, then any suffix tokens
+    # (e.g. result(r) or chained expressions). Reuse the normal line renderer so
+    # long suffixes are also split to respect line_length.
+    close_tokens = [body[close_idx]] + body[close_idx + 1:]
+    if comment is not None:
+        close_tokens.append(comment)
+    lines.extend(render_logical_line(close_tokens, indent, cfg))
 
     return lines
 
@@ -580,26 +657,6 @@ def render_logical_line(
 
     full_line = indent + line_body + comment_str
 
-    # String literals that already use Fortran in-string continuation (&\n&)
-    # are represented as STRING tokens whose text contains a newline.  We must
-    # never split or rearrange a line containing such a token: doing so would
-    # embed the formatter's own & markers inside or adjacent to the string's
-    # continuation markers, producing confusing or invalid output.
-    #
-    # However, the formatter may have changed the indentation level of the
-    # line.  The first physical line in full_line already has the correct new
-    # indent, but the continuation lines embedded inside the STRING token still
-    # carry the original source indentation.  We re-indent them so that each
-    # leading & sits directly under the opening quote character of the string.
-    if any(tok.kind == TokenKind.STRING and "\n" in tok.text for tok in body):
-        quote_col = _multiline_string_column(body, indent)
-        continuation_prefix = " " * quote_col
-        physical = full_line.split("\n")
-        adjusted = [physical[0]]
-        for seg in physical[1:]:
-            adjusted.append(continuation_prefix + seg.lstrip())
-        return adjusted
-
     if len(full_line) <= cfg.line_length:
         return [full_line]
 
@@ -615,6 +672,28 @@ def render_logical_line(
     continuation_indent = indent + " " * cfg.indent_width
 
     while remaining:
+        # If the first remaining token is a STRING too long for the current
+        # physical line, split it using Fortran in-string continuation.
+        lead = remaining[0]
+        if lead.kind == TokenKind.STRING:
+            prefix_len = len(current_indent)
+            if prefix_len + len(lead.text) > cfg.line_length:
+                frags = _split_string_literal(
+                    lead.text, prefix_len, continuation_indent, cfg.line_length
+                )
+                if len(frags) > 1:
+                    remaining = remaining[1:]
+                    lines.append(current_indent + frags[0])
+                    for frag in frags[1:-1]:
+                        lines.append(frag)
+                    if remaining:
+                        lines.append(frags[-1] + " &")
+                        current_indent = continuation_indent
+                    else:
+                        lines.append(frags[-1] + comment_str)
+                        break
+                    continue
+
         # Budget: line_length - len(current_indent) - 2 (for ' &')
         budget = cfg.line_length - len(current_indent) - 2
         parts_acc: list[str] = []
