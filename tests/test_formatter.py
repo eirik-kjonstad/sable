@@ -928,7 +928,8 @@ class TestArgListExpansion:
         lines = result.splitlines()
         assert all(len(line) <= 100 for line in lines)
         assert lines[0].endswith(" &")
-        assert any(".or. this%is_keyword_present(" in line for line in lines[1:])
+        assert any("this%is_keyword_present(" in line for line in lines[1:])
+        assert not any(line.lstrip().startswith(".or.") for line in lines[1:])
 
     def test_expanded_is_idempotent(self):
         src = (
@@ -1234,6 +1235,22 @@ class TestStringSplittingInArgList:
         assert b_line.endswith(" &")
         assert c_line.endswith(" &")
 
+    def test_long_string_single_arg_closing_paren_uses_base_indent(self):
+        src = (
+            "call output%error_msg( &\n"
+            "   'Failed to read wavefunction from input.  Did you forget to specify "
+            "all wavefunctions for &\n"
+            "   &the calculation?' &\n"
+            ")\n"
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        close_line = next(line for line in lines if line.strip() == ")")
+        call_line = next(line for line in lines if "call output%error_msg(" in line)
+        assert len(close_line) - len(close_line.lstrip()) == len(call_line) - len(
+            call_line.lstrip()
+        )
+
 
 class TestStringSplitting:
     """Strings that exceed line_length are split with Fortran in-string continuation."""
@@ -1313,6 +1330,21 @@ class TestLineBreakPriority:
             line.rstrip().endswith("+ &") or line.rstrip().endswith(".and. &")
             for line in lines[:-1]
         )
+
+    def test_logical_chain_prefers_break_after_operator(self):
+        src = (
+            "requested = this%is_keyword_present('freeze core', 'active space') "
+            ".or. this%is_keyword_present('freeze atom cores', 'active space') .or. "
+            "this%is_keyword_present('localized', 'active space') .or. "
+            "this%is_keyword_present('canonical', 'active space') .or. "
+            "this%is_keyword_present('plot hf active density', 'visualization') .or. "
+            "this%is_embedding_on() .or. "
+            "(this%requested_calculation(mlhf) .and. this%requested_cc_calculation())\n"
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        assert not any(line.lstrip().startswith(".or.") for line in lines[1:])
+        assert any(line.rstrip().endswith(".or. &") for line in lines[:-1])
 
 
 class TestColonSpacing:

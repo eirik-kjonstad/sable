@@ -796,7 +796,7 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
         unique_depths = sorted(set(boundary_depths))
         best_boundary: int | None = None
         for target_depth in unique_depths:
-            priorities: list[list[int]] = [[], [], []]
+            priorities: list[list[int]] = [[], [], [], []]
             for boundary in range(1, fit_upto + 1):
                 left = tokens[boundary - 1]
                 right = tokens[boundary] if boundary < len(tokens) else None
@@ -807,11 +807,14 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
                     priorities[0].append(boundary)
                 elif left.kind == TokenKind.OP_ASSIGN and same_depth:
                     priorities[1].append(boundary)
-                elif same_depth and (
-                    left.kind in _LOW_PRECEDENCE_SPLIT_OPS
-                    or (right is not None and right.kind in _LOW_PRECEDENCE_SPLIT_OPS)
-                ):
+                elif same_depth and left.kind in _LOW_PRECEDENCE_SPLIT_OPS:
                     priorities[2].append(boundary)
+                elif (
+                    same_depth
+                    and right is not None
+                    and right.kind in _LOW_PRECEDENCE_SPLIT_OPS
+                ):
+                    priorities[3].append(boundary)
 
             # For a leading designator/function-like prefix `name(...)`, avoid
             # splitting inside that first parenthesised segment when there are
@@ -838,6 +841,11 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
         and protected_end < fit_upto
     ):
         split_at = protected_end + 1
+
+    # Keep low-precedence operators at line end when they fit. This avoids
+    # continuation lines that start with `.or.` / `.and.`.
+    if split_at < fit_upto and tokens[split_at].kind in _LOW_PRECEDENCE_SPLIT_OPS:
+        split_at += 1
 
     adjusted = _avoid_percent_split(tokens, split_at)
     split_at = adjusted if adjusted > 0 else split_at
@@ -1195,7 +1203,17 @@ def render_logical_line(
                             remaining = remaining[1:]
                         else:
                             lines.append(frags[-1] + " &")
-                        current_indent = continuation_indent
+                        # If the next token closes the call/group opened on the
+                        # original line, emit that close at the original indent.
+                        # This avoids over-indenting a lone closing ')' after a
+                        # continued long string argument.
+                        if remaining and remaining[0].kind in (
+                            TokenKind.RPAREN,
+                            TokenKind.RBRACKET,
+                        ):
+                            current_indent = indent
+                        else:
+                            current_indent = continuation_indent
                     else:
                         tail = " &" if force_trailing_continuation else ""
                         lines.append(frags[-1] + tail + comment_str)
