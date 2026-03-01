@@ -14,6 +14,7 @@ so they can be individually toggled and tested.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .tokens import Token, TokenKind
@@ -431,18 +432,28 @@ class IndentTracker:
 
     @staticmethod
     def _first_keyword(line_tokens: list[Token]) -> str:
-        """Return the first keyword text, skipping an optional leading label."""
+        """Return the first keyword text, skipping optional leading labels.
+
+        Supported prefixes before the first executable keyword:
+        - numeric statement labels (``10 do i = ...``)
+        - construct names (``FindPos: do i = ...``)
+        - a numeric label followed by a construct name
+          (``10 FindPos: do i = ...``)
+        """
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         if not non_comment:
             return ""
-        if non_comment[0].kind == TokenKind.KEYWORD:
-            return non_comment[0].text.lower()
+        i = 0
+        if non_comment[i].kind in (TokenKind.INTEGER, TokenKind.LABEL):
+            i += 1
         if (
-            len(non_comment) > 1
-            and non_comment[0].kind in (TokenKind.INTEGER, TokenKind.LABEL)
-            and non_comment[1].kind == TokenKind.KEYWORD
+            i + 1 < len(non_comment)
+            and non_comment[i].kind == TokenKind.NAME
+            and non_comment[i + 1].kind == TokenKind.COLON
         ):
-            return non_comment[1].text.lower()
+            i += 2
+        if i < len(non_comment) and non_comment[i].kind == TokenKind.KEYWORD:
+            return non_comment[i].text.lower()
         return ""
 
     @staticmethod
@@ -507,6 +518,12 @@ class IndentTracker:
             if len(non_comment) > 1 and non_comment[1].kind == TokenKind.LPAREN:
                 return False
         return True
+
+
+_DIRECTIVE_BRANCH_RE = re.compile(
+    r"^#\s*(if|ifdef|ifndef|elif|else|endif)\b", flags=re.IGNORECASE
+)
+"""Match branch-forming preprocessor directives."""
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +630,22 @@ def _avoid_array_constructor_split(tokens: list[Token], split_at: int) -> int:
     return split_at
 
 
+def _avoid_leading_comma_split(tokens: list[Token], split_at: int) -> int:
+    """Adjust *split_at* so the next physical line does not start with a comma."""
+    if split_at <= 0 or split_at >= len(tokens):
+        return split_at
+    if tokens[split_at].kind != TokenKind.COMMA:
+        return split_at
+
+    # Prefer moving the boundary left so the comma stays with the preceding item.
+    if split_at > 1:
+        return split_at - 1
+
+    # If the split is right after the first token, include the comma on this line.
+    # This avoids a leading comma on the continuation line.
+    return split_at + 1
+
+
 def _is_paren_slash_array_constructor(inner: list[Token]) -> bool:
     """Return True when *inner* is the body of a ``(/ ... /)`` constructor."""
     if len(inner) < 2:
@@ -654,6 +687,7 @@ def _greedy_split_arg(
                 adjusted = _avoid_percent_split(remaining, idx)
                 split_at = adjusted if adjusted > 0 else idx
                 split_at = _avoid_array_constructor_split(remaining, split_at)
+                split_at = _avoid_leading_comma_split(remaining, split_at)
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
@@ -880,6 +914,7 @@ def render_logical_line(
     tokens: list[Token],
     indent: str,
     cfg: FormatConfig,
+    continuation_step: int | None = None,
 ) -> list[str]:
     """Render a logical line (already normalised) to one or more physical lines.
 
@@ -925,7 +960,9 @@ def render_logical_line(
     lines: list[str] = []
     remaining = list(body)
     current_indent = indent
-    continuation_indent = indent + " " * cfg.indent_width
+    if continuation_step is None:
+        continuation_step = cfg.indent_width
+    continuation_indent = indent + " " * continuation_step
     current_depth = 0  # paren depth carried across physical-line splits
 
     while remaining:
@@ -967,6 +1004,7 @@ def render_logical_line(
                 adjusted = _avoid_percent_split(remaining, idx)
                 split_at = adjusted if adjusted > 0 else idx
                 split_at = _avoid_array_constructor_split(remaining, split_at)
+                split_at = _avoid_leading_comma_split(remaining, split_at)
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
@@ -1156,6 +1194,13 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         )
 
     last_was_end_routine = False
+    continuation_chain_indent: str | None = None
+    saw_directive_after_continuation = False
+    branch_base_levels: list[int] = []
+
+    def _has_explicit_trailing_continuation(line_tokens: list[Token]) -> bool:
+        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
+        return bool(non_comment and non_comment[-1].kind == TokenKind.CONTINUATION)
 
     for logical_line in iter_logical_lines(tokens):
         logical_line = merge_end_keywords(logical_line, cfg)
@@ -1164,7 +1209,22 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         # Preprocessor directives: flush buffer at current level, emit at column 0
         if normalised and normalised[0].kind == TokenKind.DIRECTIVE:
             flush_pending(tracker.indent())
-            output_lines.append(normalised[0].text)
+            directive_text = normalised[0].text
+            match = _DIRECTIVE_BRANCH_RE.match(directive_text.lstrip())
+            if match is not None:
+                directive = match.group(1).lower()
+                if directive in ("if", "ifdef", "ifndef"):
+                    branch_base_levels.append(tracker.level)
+                elif directive in ("elif", "else") and branch_base_levels:
+                    # Each sibling branch starts from the indentation level that
+                    # existed before the opening #if-like directive.
+                    tracker.level = branch_base_levels[-1]
+                elif directive == "endif" and branch_base_levels:
+                    branch_base_levels.pop()
+
+            output_lines.append(directive_text)
+            if continuation_chain_indent is not None:
+                saw_directive_after_continuation = True
             last_was_end_routine = False
             continue
 
@@ -1176,6 +1236,11 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         # Code line: emit buffered comments/blanks at this line's indentation level
         indent, _ = tracker.process_line(normalised)
+        used_chain_indent = False
+        if continuation_chain_indent is not None and saw_directive_after_continuation:
+            indent = continuation_chain_indent
+            used_chain_indent = True
+        continuation_step = 0 if used_chain_indent else None
 
         # Normalise blank lines between consecutive routines to exactly two,
         # but only when there are no comments in the gap.
@@ -1191,22 +1256,39 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         split = _split_single_line_if(normalised)
         if split is not None:
-            physical = render_logical_line(normalised, indent, cfg)
+            physical = render_logical_line(
+                normalised, indent, cfg, continuation_step=continuation_step
+            )
             if len(physical) == 1:
                 # Fits on one line — keep the action on the same line as the if.
                 output_lines.extend(physical)
             else:
                 # Too long — split at the if/action boundary.
                 cond_tokens, action_tokens = split
-                cond_lines = render_logical_line(cond_tokens, indent, cfg)
+                cond_lines = render_logical_line(
+                    cond_tokens, indent, cfg, continuation_step=continuation_step
+                )
                 cond_lines[-1] += " &"
                 action_indent = indent + " " * cfg.indent_width
                 action_lines = render_logical_line(action_tokens, action_indent, cfg)
                 output_lines.extend(cond_lines)
                 output_lines.extend(action_lines)
         else:
-            physical = render_logical_line(normalised, indent, cfg)
+            physical = render_logical_line(
+                normalised, indent, cfg, continuation_step=continuation_step
+            )
             output_lines.extend(physical)
+
+        if _has_explicit_trailing_continuation(normalised):
+            if used_chain_indent:
+                # Keep chained continuation segments aligned when directives
+                # split a statement across multiple physical chunks.
+                continuation_chain_indent = indent
+            else:
+                continuation_chain_indent = indent + " " * cfg.indent_width
+        else:
+            continuation_chain_indent = None
+        saw_directive_after_continuation = False
         last_was_end_routine = _is_end_routine(non_comment)
 
     # Flush any trailing comments/blanks at the current (final) indent level

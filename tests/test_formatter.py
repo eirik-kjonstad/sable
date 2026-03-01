@@ -145,6 +145,18 @@ class TestPercentSplitting:
         assert once == twice
 
 
+class TestCommaSplitting:
+    def test_continuation_line_does_not_start_with_comma(self):
+        src = (
+            "LSAOTENSOR_deallocate_1dim, SLSAOTENSOR_deallocate_1dim, "
+            "GLOBALLSAOTENSOR_deallocate_1dim, ATOMTYPEITEM_deallocate_1dim, "
+            "ATOMITEM_deallocate_1dim, LSMATRIX_deallocate_1dim, FOO_deallocate_1dim\n"
+        )
+        result = fmt(src, line_length=55)
+        for line in result.splitlines():
+            assert not line.lstrip().startswith(","), f"leading comma in: {line!r}"
+
+
 class TestIndentation:
     def test_do_body_indented(self):
         source = "do i = 1, 10\nx = i\nend do"
@@ -188,6 +200,37 @@ class TestIndentation:
         assert inner_close.startswith("   ")  # one level after closing inner do
         assert not outer_close.startswith(" ")  # closed outer do
         assert not after.startswith(" ")  # back at top-level
+
+    def test_named_do_construct_preserves_else_indentation(self):
+        source = (
+            "subroutine s\n"
+            "if (md) then\n"
+            "if (.not. l_mdel) then\n"
+            "FindPos: do i = 1, n\n"
+            "if (ok) then\n"
+            "exit FindPos\n"
+            "end if\n"
+            "end do FindPos\n"
+            "end if\n"
+            "x = 1\n"
+            "else\n"
+            "x = 2\n"
+            "end if\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        do_line = next(
+            line for line in lines if line.lstrip().startswith("FindPos: do")
+        )
+        x_then_line = next(line for line in lines if line.strip() == "x = 1")
+        else_line = next(line for line in lines if line.strip() == "else")
+        x_else_line = lines[lines.index(else_line) + 1]
+
+        assert do_line.startswith("         ")
+        assert x_then_line.startswith("      ")
+        assert else_line.startswith("   ")
+        assert x_else_line.startswith("      ")
 
     def test_type_contains_end_type_same_indent(self):
         source = (
@@ -344,6 +387,103 @@ class TestDirectives:
         endif_line = next(line for line in lines if line.lstrip().startswith("#endif"))
         assert else_line == "#else"
         assert endif_line == "#endif"
+
+    def test_continuation_indent_preserved_across_directive_block(self):
+        source = (
+            "subroutine s\n"
+            "   DECAOBATCHINFO_deallocate_1dim, &\n"
+            "#ifdef VAR_ENABLE_TENSORS\n"
+            "tensor_deallocate_1dim, &\n"
+            "#endif\n"
+            "lvec_data_deallocate_1dim, lattice_cell_deallocate_1dim, "
+            "lsmpi_deallocate_i8V, &\n"
+            "lsmpi_deallocate_i4V, lsmpi_deallocate_dV, lsmpi_local_deallocate_dV\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        tensor_line = next(line for line in lines if "tensor_deallocate_1dim" in line)
+        lvec_line = next(line for line in lines if "lvec_data_deallocate_1dim" in line)
+        lsmpi_line = next(line for line in lines if "lsmpi_deallocate_i4V" in line)
+        assert tensor_line.startswith("      ")
+        assert lvec_line.startswith("      ")
+        assert lsmpi_line.startswith("      ")
+
+    def test_chained_continuation_indent_preserved_across_directive_block(self):
+        source = (
+            "subroutine s\n"
+            "   lsmpi_local_deallocate_I4V, lsmpi_local_deallocate_I8V, "
+            "lsmpi_deallocate_d, &\n"
+            "   DECAOBATCHINFO_deallocate_1dim, &\n"
+            "#ifdef VAR_ENABLE_TENSORS\n"
+            "   tensor_deallocate_1dim, &\n"
+            "#endif\n"
+            "   lvec_data_deallocate_1dim, lattice_cell_deallocate_1dim, "
+            "lsmpi_deallocate_i8V, &\n"
+            "   lsmpi_deallocate_i4V, lsmpi_deallocate_dV, "
+            "lsmpi_local_deallocate_dV\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        deca_line = next(
+            line for line in lines if "DECAOBATCHINFO_deallocate_1dim" in line
+        )
+        tensor_line = next(line for line in lines if "tensor_deallocate_1dim" in line)
+        lvec_line = next(line for line in lines if "lvec_data_deallocate_1dim" in line)
+        lsmpi_line = next(line for line in lines if "lsmpi_deallocate_i4V" in line)
+        assert deca_line.startswith("      ")
+        assert tensor_line.startswith("      ")
+        assert lvec_line.startswith("      ")
+        assert lsmpi_line.startswith("      ")
+
+    def test_else_branch_resets_to_pre_if_indentation_level(self):
+        source = (
+            "subroutine s\n"
+            "if (a) then\n"
+            "#ifdef FLAG_A\n"
+            "if (b) then\n"
+            "#else\n"
+            "if (c) then\n"
+            "#endif\n"
+            "x = 1\n"
+            "end if\n"
+            "end if\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        if_b_line = next(line for line in lines if "if (b) then" in line)
+        if_c_line = next(line for line in lines if "if (c) then" in line)
+        x_line = next(line for line in lines if line.strip() == "x = 1")
+        assert if_b_line.startswith("      ")
+        assert if_c_line.startswith("      ")
+        assert x_line.startswith("         ")
+
+    def test_elif_branch_resets_to_pre_if_indentation_level(self):
+        source = (
+            "subroutine s\n"
+            "if (a) then\n"
+            "#if defined(FLAG_A)\n"
+            "if (b) then\n"
+            "#elif defined(FLAG_B)\n"
+            "if (c) then\n"
+            "#else\n"
+            "if (d) then\n"
+            "#endif\n"
+            "x = 1\n"
+            "end if\n"
+            "end if\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        if_b_line = next(line for line in lines if "if (b) then" in line)
+        if_c_line = next(line for line in lines if "if (c) then" in line)
+        if_d_line = next(line for line in lines if "if (d) then" in line)
+        assert if_b_line.startswith("      ")
+        assert if_c_line.startswith("      ")
+        assert if_d_line.startswith("      ")
 
 
 class TestContinuationWithComments:
