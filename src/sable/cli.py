@@ -198,6 +198,7 @@ def main(
         return [p]
 
     sources: list[tuple[str, Path | None]] = []
+    read_errors: list[tuple[Path, Exception]] = []
 
     if not files:
         source = sys.stdin.read()
@@ -211,12 +212,22 @@ def main(
                 sources.append((source, path))
             else:
                 for resolved in _collect(p):
-                    sources.append((resolved.read_text(encoding="utf-8"), resolved))
+                    try:
+                        source = resolved.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as exc:
+                        read_errors.append((resolved, exc))
+                        continue
+                    sources.append((source, resolved))
 
     any_changed = False
     exit_code = 0
     n_changed = n_unchanged = n_errors = 0
     stdin_mode = False
+
+    for path, exc in read_errors:
+        click.echo(f"{SYM_ERR} {_fmt_label(str(path))}: {exc}", err=True)
+        exit_code = 123
+        n_errors += 1
 
     for source, path in sources:
         label = str(path) if path else "<stdin>"
