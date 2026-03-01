@@ -106,6 +106,35 @@ class TestSpacing:
         assert "x**2" in result
 
 
+class TestPercentSplitting:
+    """Lines must never be broken adjacent to a % (component access) operator."""
+
+    def _no_bad_percent(self, result: str) -> None:
+        for line in result.splitlines():
+            assert not line.rstrip().endswith("%"), f"Split after %: {line!r}"
+            assert not line.lstrip().startswith("%"), f"Split before %: {line!r}"
+
+    def test_percent_not_split(self):
+        # wf%element must stay together on one line
+        src = "result = very_long_variable_name + another_long_name + wf%element + other\n"
+        result = fmt(src, line_length=60)
+        self._no_bad_percent(result)
+        assert "wf%element" in result
+
+    def test_percent_chain_not_split(self):
+        # a%b%c is one logical unit; no split anywhere inside the chain
+        src = "result = some_long_prefix + this%wf%element + other_stuff\n"
+        result = fmt(src, line_length=60)
+        self._no_bad_percent(result)
+        assert "this%wf%element" in result
+
+    def test_percent_split_idempotent(self):
+        src = "result = very_long_variable_name + another_long_name + wf%element + other\n"
+        once = fmt(src, line_length=60)
+        twice = fmt(once, line_length=60)
+        assert once == twice
+
+
 class TestIndentation:
     def test_do_body_indented(self):
         source = "do i = 1, 10\nx = i\nend do"

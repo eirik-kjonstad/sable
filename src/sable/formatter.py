@@ -400,6 +400,31 @@ def _split_at_top_commas(tokens: list[Token]) -> list[list[Token]]:
     return groups
 
 
+def _avoid_percent_split(tokens: list[Token], split_at: int) -> int:
+    """Back up *split_at* to avoid splitting in the middle of a ``%`` chain.
+
+    ``obj%field`` and ``a%b%c`` are logical units; splitting between them
+    produces awkward continuations like ``obj% &\\n   field``.  Walk backward
+    from *split_at* until neither side of the proposed split boundary is
+    adjacent to a ``%`` token.
+
+    Returns the adjusted index.  A return value of 0 means the chain starts
+    at the very beginning of *tokens*; the caller should fall back to the
+    original *split_at* to avoid emitting an empty physical line.
+    """
+    idx = split_at
+    while idx > 0:
+        if tokens[idx].kind == TokenKind.OP_PERCENT:
+            # Would split before %; back up past the left-hand operand.
+            idx -= 1
+        elif tokens[idx - 1].kind == TokenKind.OP_PERCENT:
+            # Would split after %; back up past % and its left-hand operand.
+            idx -= 2
+        else:
+            break
+    return idx
+
+
 def _greedy_split_arg(
     arg_toks: list[Token],
     first_indent: str,
@@ -429,13 +454,14 @@ def _greedy_split_arg(
             space = " " if _needs_space_before(prev, tok) else ""
             token_str = space + tok.text
             if char_count + len(token_str) > budget and idx > 0:
-                split_at = idx
+                adjusted = _avoid_percent_split(remaining, idx)
+                split_at = adjusted if adjusted > 0 else idx
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
             prev = tok
 
-        chunk = "".join(parts_acc)
+        chunk = "".join(parts_acc[:split_at])
         remaining = remaining[split_at:]
 
         if remaining:
@@ -705,13 +731,14 @@ def render_logical_line(
             space = " " if _needs_space_before(prev2, tok) else ""
             token_str = space + tok.text
             if char_count + len(token_str) > budget and idx > 0:
-                split_at = idx
+                adjusted = _avoid_percent_split(remaining, idx)
+                split_at = adjusted if adjusted > 0 else idx
                 break
             parts_acc.append(token_str)
             char_count += len(token_str)
             prev2 = tok
 
-        chunk = "".join(parts_acc)
+        chunk = "".join(parts_acc[:split_at])
         remaining = remaining[split_at:]
 
         if remaining:
