@@ -2,8 +2,8 @@
 
 An opinionated Fortran formatter, inspired by [Black](https://github.com/psf/black).
 
-> "Any customer can have a car painted any colour that he wants so long as it is black."
-> — Henry Ford
+> "So it goes."
+> — Kurt Vonnegut, *Slaughterhouse-Five*
 
 Sable applies a consistent, non-negotiable style to Fortran source files so
 that code review can focus on logic rather than style debates.
@@ -142,10 +142,10 @@ one-argument-per-line (Black style), with `&` markers aligned in a column:
 call compute(alpha_input, beta_input, gamma_input, result_output)
 
 ! After
-call compute(  &
-   alpha_input, &
-   beta_input,  &
-   gamma_input, &
+call compute(    &
+   alpha_input,  &
+   beta_input,   &
+   gamma_input,  &
    result_output &
 )
 ```
