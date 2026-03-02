@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sable"
 version = "0.1.0"
-description = "An opinionated Fortran formatter, inspired by Black"
+description = "An uncompromising Fortran formatter, inspired by Black"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

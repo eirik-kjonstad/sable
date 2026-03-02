@@ -172,7 +172,7 @@ def main(
     no_normalize_operators: bool,
     stdin_filename: str | None,
 ) -> None:
-    """Sable: an opinionated Fortran formatter.
+    """Sable: an uncompromising Fortran formatter.
 
     Format FILES in place. Reads from stdin if no FILES are given.
 

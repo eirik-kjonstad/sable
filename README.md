@@ -1,12 +1,12 @@
 # sable
 
-An opinionated Fortran formatter, inspired by [Black](https://github.com/psf/black).
+An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/black).
 
 > "So it goes."
 > — Kurt Vonnegut, *Slaughterhouse-Five*
 
-Sable applies a consistent, non-negotiable style to Fortran source files so
-code review can focus on logic rather than style debates.
+Sable enforces a consistent, non-negotiable style for Fortran source files, so
+you can focus on logic while formatting is handled automatically.
 
 ## Installation
 
@@ -39,7 +39,7 @@ Sable recognises `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`, and
 
 ## Formatting decisions
 
-Sable makes the following opinionated choices. They are not configurable
+Sable makes the following uncompromising choices. They are not configurable
 unless the option is marked with *(configurable)*.
 
 ### Most visible changes
