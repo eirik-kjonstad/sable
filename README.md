@@ -109,19 +109,8 @@ normalization).
 
 - Typed declarations are normalized to use `::`.
 - Declaration attributes are ordered canonically (for example,
-  `intent(...)`, then `optional`, then `parameter`).
+  `intent(...)`, then `optional`, then `dimension(:,:)`).
 - Attributed or long multi-entity declarations are emitted one entity per line.
-
-```fortran
-! Before
-integer, optional, parameter, intent(in) alpha_variable, beta_variable, gamma_variable
-
-! After
-integer, intent(in), optional, parameter :: &
-   alpha_variable, &
-   beta_variable,  &
-   gamma_variable
-```
 
 ### Line wrapping and continuation
 
