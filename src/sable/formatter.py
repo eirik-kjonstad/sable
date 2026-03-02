@@ -116,6 +116,7 @@ _KEYWORD_SPACE_BEFORE_PAREN: frozenset[str] = frozenset(
         "case",
         "where",
         "forall",
+        "submodule",
     }
 )
 
@@ -295,6 +296,7 @@ _INDENT_OPEN: frozenset[str] = frozenset(
         "else",
         "contains",
         "module",
+        "submodule",
         "program",
         "function",
         "subroutine",
@@ -898,9 +900,35 @@ def _split_string_literal(
     if mid_budget <= 0:
         return [tok_text]
 
+    def _is_word_char(ch: str) -> bool:
+        return ch.isalnum() or ch == "_"
+
     def _safe_pos(s: str, max_pos: int) -> int:
-        """Back up one if splitting here would cut through a doubled-quote escape."""
+        """Pick a safe split boundary near *max_pos*.
+
+        Preference order:
+        1. avoid splitting inside words (alnum/underscore boundaries),
+        2. avoid trailing whitespace before the in-string continuation '&',
+        3. avoid splitting a doubled-quote escape.
+        """
         p = min(max_pos, len(s))
+        if p <= 0 or p >= len(s):
+            return p
+
+        # Move left while we'd split between two word characters.
+        while 0 < p < len(s) and _is_word_char(s[p - 1]) and _is_word_char(s[p]):
+            p -= 1
+
+        # Prefer placing whitespace at the start of the next fragment rather
+        # than leaving trailing spaces before '&' in the current fragment.
+        while p > 0 and s[p - 1].isspace():
+            p -= 1
+
+        # Fallback: if no non-word boundary exists within budget, keep the
+        # original budgeted split rather than producing an empty chunk.
+        if p == 0:
+            p = min(max_pos, len(s))
+
         if 0 < p < len(s) and s[p - 1] == quote and s[p] == quote:
             p -= 1
         return p

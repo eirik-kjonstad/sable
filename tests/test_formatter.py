@@ -109,6 +109,10 @@ class TestSpacing:
         result = fmt("y = x**2")
         assert "x**2" in result
 
+    def test_space_after_submodule_keyword_before_paren(self):
+        result = fmt("submodule(ccs_class) multiplier_equation_ccs\n")
+        assert result.strip() == "submodule (ccs_class) multiplier_equation_ccs"
+
 
 class TestPercentSplitting:
     """Lines must never be broken adjacent to a % (component access) operator."""
@@ -200,6 +204,17 @@ class TestIndentation:
         assert inner_close.startswith("   ")  # one level after closing inner do
         assert not outer_close.startswith(" ")  # closed outer do
         assert not after.startswith(" ")  # back at top-level
+
+    def test_submodule_body_indented(self):
+        source = (
+            "submodule (ccs_class) multiplier_equation_ccs\n"
+            "implicit none\n"
+            "end submodule multiplier_equation_ccs\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        implicit_line = next(line for line in lines if line.strip() == "implicit none")
+        assert implicit_line.startswith("   ")
 
     def test_named_do_construct_preserves_else_indentation(self):
         source = (
@@ -1299,6 +1314,17 @@ class TestStringSplitting:
         result = fmt(src)
         assert result.strip() == "x = 'hello'"
         assert "&" not in result
+
+    def test_string_split_avoids_mid_word_breaks(self):
+        src = (
+            "character(len = 500) :: description1 = "
+            "'A DIIS CC ground state amplitude equations solver. It uses an "
+            "extrapolation of previous quasi-Newton perturbation theory estimates "
+            "of the next amplitudes.'\n"
+        )
+        result = fmt(src, line_length=100)
+        assert "q&\n&uasi" not in result
+        assert "Mo&\n&lecular" not in result
 
 
 class TestLineBreakPriority:
