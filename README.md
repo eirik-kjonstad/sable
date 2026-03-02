@@ -27,6 +27,12 @@ sable --check src/
 # Preview changes as a unified diff
 sable --diff src/
 
+# Check + diff together (non-zero if any file would change)
+sable --check --diff src/
+
+# Migration mode: only low-risk whitespace/layout changes
+sable --safe src/
+
 # Format piped input (Sable reads stdin when no files are passed)
 cat code.f90 | sable
 
@@ -181,6 +187,8 @@ flags are:
 | `--keyword-case` | `lower` | `lower` or `upper` |
 | `--end-keyword-form` | `spaced` | `spaced` or `compact` |
 | `--no-normalize-operators` | off | Keep old-style relational operators |
+| `--safe` | off | Migration mode; skip non-safe syntax/canonicalization rewrites |
+| `--quiet` | off | Suppress non-error status output |
 
 ## Name
 

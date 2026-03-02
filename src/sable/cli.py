@@ -113,6 +113,21 @@ def _make_config(
     )
 
 
+def _make_safe_config(base: FormatConfig) -> FormatConfig:
+    return FormatConfig(
+        line_length=base.line_length,
+        indent_width=base.indent_width,
+        keyword_case=base.keyword_case,
+        end_keyword_form=base.end_keyword_form,
+        normalize_operators=False,
+        trailing_newline=base.trailing_newline,
+        double_colon_declarations=base.double_colon_declarations,
+        normalize_keyword_case=False,
+        normalize_end_keywords=False,
+        canonicalize_declarations=False,
+    )
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
@@ -134,6 +149,18 @@ def _make_config(
     is_flag=True,
     default=False,
     help="Don't write files, print a unified diff of changes.",
+)
+@click.option(
+    "--safe",
+    is_flag=True,
+    default=False,
+    help="Migration mode: only apply low-risk whitespace/layout changes.",
+)
+@click.option(
+    "--quiet",
+    is_flag=True,
+    default=False,
+    help="Suppress non-error status output (useful with --check).",
 )
 @click.option(
     "--line-length",
@@ -181,6 +208,8 @@ def main(
     files: tuple[Path, ...],
     check: bool,
     diff: bool,
+    safe: bool,
+    quiet: bool,
     line_length: int,
     indent_width: int,
     keyword_case: str,
@@ -205,6 +234,7 @@ def main(
         end_keyword_form=end_keyword_form,
         no_normalize_operators=no_normalize_operators,
     )
+    safe_cfg = _make_safe_config(cfg) if safe else cfg
 
     _FORTRAN_SUFFIXES = {".f90", ".F90", ".f95", ".F95", ".f03", ".F03", ".f08", ".F08"}
 
@@ -238,17 +268,25 @@ def main(
     any_changed = False
     exit_code = 0
     n_changed = n_unchanged = n_errors = 0
+    n_safe_non_safe_available = 0
     stdin_mode = False
 
     for path, exc in read_errors:
-        click.echo(f"{SYM_ERR} {_fmt_label(str(path))}: {exc}", err=True)
+        if not quiet:
+            click.echo(f"{SYM_ERR} {_fmt_label(str(path))}: {exc}", err=True)
+        else:
+            click.echo(f"{_fmt_label(str(path))}: {exc}", err=True)
         exit_code = 123
         n_errors += 1
 
     for source, path in sources:
         label = str(path) if path else "<stdin>"
         try:
-            formatted = format_source(source, cfg)
+            formatted = format_source(source, safe_cfg)
+            if safe:
+                full_formatted = format_source(source, cfg)
+                if full_formatted != formatted:
+                    n_safe_non_safe_available += 1
         except Exception as exc:  # noqa: BLE001
             click.echo(f"{SYM_ERR} {_fmt_label(label)}: {exc}", err=True)
             exit_code = 123
@@ -257,47 +295,77 @@ def main(
 
         changed = formatted != source
 
-        if diff:
-            if changed:
-                import difflib
+        if diff and changed:
+            import difflib
 
-                original_lines = source.splitlines(keepends=True)
-                formatted_lines = formatted.splitlines(keepends=True)
-                delta = list(
-                    difflib.unified_diff(
-                        original_lines,
-                        formatted_lines,
-                        fromfile=f"a/{label}",
-                        tofile=f"b/{label}",
-                    )
+            original_lines = source.splitlines(keepends=True)
+            formatted_lines = formatted.splitlines(keepends=True)
+            delta = list(
+                difflib.unified_diff(
+                    original_lines,
+                    formatted_lines,
+                    fromfile=f"a/{label}",
+                    tofile=f"b/{label}",
                 )
-                click.echo(_colorize_unified_diff(delta), nl=False)
-        elif check:
+            )
+            click.echo(_colorize_unified_diff(delta), nl=False)
+
+        if check:
             if changed:
-                click.echo(f"{SYM_SKIP} {_fmt_label(label)}")
+                if not quiet:
+                    click.echo(
+                        f"{SYM_SKIP} {_fmt_label(label)} "
+                        + click.style("would be reformatted", fg="yellow")
+                    )
                 any_changed = True
                 n_changed += 1
             else:
-                click.echo(f"{SYM_OK} {click.style(label, dim=True)}")
+                if not quiet:
+                    click.echo(
+                        f"{SYM_OK} {click.style(label, dim=True)} "
+                        + click.style("already formatted", fg="green")
+                    )
                 n_unchanged += 1
         else:
-            if path and str(path) != "-":
+            if diff:
                 if changed:
-                    path.write_text(formatted, encoding="utf-8")
-                    click.echo(f"{SYM_CHANGED} {_fmt_label(label)}")
                     n_changed += 1
                 else:
-                    click.echo(f"{SYM_OK} {click.style(label, dim=True)}")
+                    n_unchanged += 1
+            elif path and str(path) != "-":
+                if changed:
+                    path.write_text(formatted, encoding="utf-8")
+                    if not quiet:
+                        click.echo(f"{SYM_CHANGED} {_fmt_label(label)}")
+                    n_changed += 1
+                else:
+                    if not quiet:
+                        click.echo(f"{SYM_OK} {click.style(label, dim=True)}")
                     n_unchanged += 1
             else:
                 stdin_mode = True
                 click.echo(formatted, nl=False)
 
-    if not diff and not stdin_mode and (n_changed + n_unchanged + n_errors) > 0:
+    if (
+        not quiet
+        and not stdin_mode
+        and (n_changed + n_unchanged + n_errors) > 0
+        and (check or not diff)
+    ):
         click.echo()
         click.echo(
             click.style("All done! ", fg="cyan", bold=True)
             + _summary(n_changed, n_unchanged, n_errors, check)
+        )
+
+    if safe and n_safe_non_safe_available and not quiet and not stdin_mode:
+        click.echo(
+            click.style("Note: ", fg="cyan", bold=True)
+            + (
+                f"{n_safe_non_safe_available} file"
+                f"{'s' if n_safe_non_safe_available != 1 else ''} "
+                "have additional non-safe rewrites available in full mode."
+            )
         )
 
     if check and any_changed:

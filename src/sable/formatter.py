@@ -53,6 +53,15 @@ class FormatConfig:
     double_colon_declarations: bool = True
     """Always emit '::' in type declarations."""
 
+    normalize_keyword_case: bool = True
+    """Normalize keyword casing according to ``keyword_case`` when enabled."""
+
+    normalize_end_keywords: bool = True
+    """Normalize compact/spaced END keywords according to ``end_keyword_form``."""
+
+    canonicalize_declarations: bool = True
+    """Canonicalize declaration structure and attribute ordering."""
+
 
 DEFAULT_CONFIG = FormatConfig()
 
@@ -155,6 +164,8 @@ _SPACED_TO_COMPACT: dict[str, str] = {v: k for k, v in _COMPACT_TO_SPACED.items(
 
 def normalise_keyword_case(token: Token, cfg: FormatConfig) -> Token:
     """Apply configured keyword casing."""
+    if not cfg.normalize_keyword_case:
+        return token
     if token.kind != TokenKind.KEYWORD:
         return token
     text = token.text.lower() if cfg.keyword_case == "lower" else token.text.upper()
@@ -163,6 +174,8 @@ def normalise_keyword_case(token: Token, cfg: FormatConfig) -> Token:
 
 def normalise_end_keyword(token: Token, cfg: FormatConfig) -> Token:
     """Normalise compact/spaced END keyword forms."""
+    if not cfg.normalize_end_keywords:
+        return token
     if token.kind != TokenKind.KEYWORD:
         return token
     text = token.text.lower()
@@ -1826,9 +1839,11 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         else:
             raw_span = [""]
 
-        logical_line = merge_end_keywords(logical_line, cfg)
+        if cfg.normalize_end_keywords:
+            logical_line = merge_end_keywords(logical_line, cfg)
         normalised = [normalise(t) for t in logical_line]
-        normalised = _canonicalise_declaration_tokens(normalised)
+        if cfg.canonicalize_declarations:
+            normalised = _canonicalise_declaration_tokens(normalised)
 
         first_raw = raw_span[0] if raw_span else ""
         control_match = _FORMAT_CONTROL_RE.match(first_raw)

@@ -72,6 +72,60 @@ def test_diff_mode_is_colorized(tmp_path):
     assert "\x1b[32m+integer :: X" in result.output
 
 
+def test_check_and_diff_together_prints_diff_and_fails_on_change(tmp_path):
+    src = tmp_path / "example.f90"
+    original = "INTEGER::X\n"
+    src.write_text(original, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--check", "--diff", str(src)])
+
+    assert result.exit_code == 1
+    assert "--- a/" in result.output
+    assert "+++ b/" in result.output
+    assert "would be reformatted" in result.output
+    assert src.read_text(encoding="utf-8") == original
+
+
+def test_check_quiet_suppresses_non_error_status_output(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text("INTEGER::X\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--check", "--quiet", str(src)])
+
+    assert result.exit_code == 1
+    assert "would be reformatted" not in result.output
+    assert "All done!" not in result.output
+
+
+def test_safe_mode_avoids_non_safe_normalizations(tmp_path):
+    src = tmp_path / "safe.f90"
+    original = "IF(A .EQ. B)THEN\nX=1\nENDIF\n"
+    src.write_text(original, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--safe", str(src)])
+
+    assert result.exit_code == 0
+    formatted = src.read_text(encoding="utf-8")
+    assert ".eq." in formatted
+    assert "endif" in formatted
+    assert "==" not in formatted
+    assert "end if" not in formatted
+
+
+def test_safe_mode_prints_notice_when_full_mode_has_more_changes(tmp_path):
+    src = tmp_path / "safe_notice.f90"
+    src.write_text("integer x\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--safe", "--check", str(src)])
+
+    assert result.exit_code == 0
+    assert "additional non-safe rewrites available in full mode" in result.output
+
+
 def test_formats_stdin_to_stdout_without_summary():
     runner = CliRunner()
     result = runner.invoke(main, [], input="INTEGER::X\n")
