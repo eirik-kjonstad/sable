@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/sable-logo.svg" alt="Sable logo" width="350">
+  <img src="assets/sable-logo.svg" alt="Sable logo" width="420">
 </p>
 
 An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/black).
