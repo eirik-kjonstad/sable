@@ -5,8 +5,8 @@ An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/
 > "So it goes."
 > — Kurt Vonnegut, *Slaughterhouse-Five*
 
-Sable enforces a consistent, non-negotiable style for Fortran source files, so
-you can focus on logic while formatting is handled automatically.
+Sable enforces one consistent style for modern free-form Fortran, so you can
+focus on code instead of formatting.
 
 ## Installation
 
@@ -40,23 +40,18 @@ cat code.f90 | sable
 cat code.f90 | sable --stdin-filename my_module.f90
 ```
 
-Sable recognises `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`, and
-`.F08` files when scanning directories.
+Directory scans include `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`,
+and `.F08` files.
 
-## Formatting decisions
+## What Sable changes
 
-Sable makes the following uncompromising choices. They are not configurable
-unless the option is marked with *(configurable)*.
-
-### Most visible changes
-
-These are the style changes users usually notice first:
-
-1. Keyword and operator normalization (`INTEGER` -> `integer`, `.EQ.` -> `==`,
-   `endif` -> `end if` by default).
-2. Consistent spacing and indentation across modern and legacy constructs.
-3. Deterministic wrapping for long lines, including Black-style
-   one-argument-per-line formatting for long calls/definitions.
+- Normalizes keyword/operator style (`INTEGER` -> `integer`, `.EQ.` -> `==`,
+  `endif` -> `end if` by default).
+- Applies consistent spacing and indentation.
+- Wraps long lines deterministically (including one-argument-per-line layouts).
+- Canonicalizes declarations (`::`, stable attribute order).
+- Preserves directives and formatting-off regions (`! sable: off` / `on`).
+- Guarantees idempotent output with exactly one trailing newline.
 
 ```fortran
 ! Before
@@ -75,15 +70,7 @@ if (A == B) then
 end if
 ```
 
-### Keywords and operators
-
-- All Fortran keywords are emitted in **lower-case** by default *(configurable:
-  `--keyword-case upper`)*.
-- Names (variables, procedures, types) are preserved exactly as written.
-- `endif` / `enddo` / `endsubroutine` etc. are normalized to spaced forms by
-  default *(configurable: `--end-keyword-form compact`)*.
-- Old-style relational operators are normalized by default *(disable with
-  `--no-normalize-operators`)*:
+## Formatting rules (quick reference)
 
 | Old | New |
 |-----|-----|
@@ -94,91 +81,20 @@ end if
 | `.GT.` | `>`  |
 | `.GE.` | `>=` |
 
-`.AND.`, `.OR.`, `.NOT.`, `.EQV.`, `.NEQV.` are preserved (with keyword-case
-normalization).
-
-### Spacing and indentation
-
-- **One space** around binary operators (`=`, `==`, `/=`, `<`, `<=`, `>`, `>=`,
-  `+`, `-`, `//`, `=>`, `::`), but **no spaces** around `%` and `**`.
-- **One space** between control/selector heads and `(`:
-  `if (...)`, `associate (...)`, `do concurrent (...)`, `select type (...)`,
-  `type is (...)`, `rank (...)`, `change team (...)`.
-- **No spaces** inside parens/brackets, and `:` spacing is context-aware:
-  `a(1:n)` and `use m, only: foo`.
-- **Two spaces** before inline comments: `x = 1  ! comment`.
-- **3 spaces** per indent level by default *(configurable: `--indent-width N`)*,
-  with correct dedent/re-indent behavior for `else`, `elseif`, `case`,
-  `contains`, `select type`, and `select rank` branches.
-
-### Declaration canonicalization
-
-- Typed declarations are normalized to use `::`.
-- Declaration attributes are ordered canonically (for example,
-  `dimension(:,:)`, then `optional`, with `intent(...)` last).
-- Attributed or long multi-entity declarations are emitted one entity per line.
-
-### Line wrapping and continuation
-
-Lines exceeding **100 characters** *(configurable: `--line-length N`)* are
-wrapped with Fortran continuation markers (`&`).
-
-- Split priority is deterministic: top-level commas, then assignment (`=`), then
-  low-precedence operators (`.or.`, `.and.`, `+`, `-`, `//`), then greedy split.
-- Long multi-argument calls/definitions are exploded one-argument-per-line.
-- Existing multiline argument lists stay exploded ("sticky multiline").
-- Single-line `if` statements stay on one line when they fit; otherwise Sable
-  splits between condition and action.
-- Long strings are split using valid Fortran in-string continuation, and existing
-  in-string continuations are normalized without changing string values.
-- Wrap logic avoids problematic splits in `%` chains (`a%b%c`) and around
-  `(/ ... /)` array-constructor delimiters, and avoids leading commas/operators
-  on continuation lines where possible.
-
-### Comments, routines, and directives
-
-- Consecutive `subroutine`/`function` definitions in `module`/`contains` blocks
-  are separated by exactly **two blank lines** (comment-only gaps are preserved).
-- Standalone comments and blank lines are aligned with the following code line.
-- Preprocessor directives (`#ifdef`, `#elif`, `#else`, `#endif`, `#define`, ...)
-  are emitted unchanged at **column 0**.
-- Compiler directive comments like `!$OMP ...` are preserved and kept aligned
-  with surrounding code.
-- `! sable: off` / `! sable: on` disables formatting for verbatim regions.
-
-### Other guarantees
-
-- Semicolon-separated statements are expanded to separate lines.
-- Sable always produces output. If a construct cannot be wrapped below the
-  configured line length, Sable still emits valid formatted code (it may keep an
-  unavoidable long line), rather than failing.
-- Output is idempotent: formatting an already formatted file produces the same
-  result.
-- Files always end with exactly **one newline**.
-
-## Style charter
-
-Sable is intentionally opinionated. The project direction is to keep a small,
-stable set of formatting rules with predictable output:
-
-- **Deterministic rewrites**: the same source always formats the same way.
-- **Canonical syntax normalization**: keyword casing, end-keyword forms, and
-  relational operators are normalized consistently.
-- **Single multiline style**: when calls/definitions wrap, Sable prefers a
-  one-item-per-line layout with explicit continuation markers.
-- **No alignment-by-column layouts**: formatting should stay stable even when
-  names are renamed or argument lengths change.
-- **Statement atomization**: multi-statement lines are split into one statement
-  per line.
-- **Structural consistency**: routine spacing, comment indentation, directive
-  placement, and trailing newlines are handled uniformly.
-- **Modern free-form focus**: Sable is designed for modern free-form Fortran
-  codebases.
+- Keywords are lower-case by default (`--keyword-case upper` to change).
+- Names are preserved exactly as written.
+- End keywords use spaced forms by default (`end if`, `end do`; configurable).
+- `.AND.`, `.OR.`, `.NOT.`, `.EQV.`, `.NEQV.` are preserved.
+- One space around most binary operators; no spaces around `%` or `**`.
+- No spaces inside parens/brackets.
+- Two spaces before inline comments (`x = 1  ! note`).
+- Default indent is 3 spaces (`--indent-width` to change).
+- Long lines wrap with `&` using deterministic split rules (`--line-length`).
+- Multi-statement lines split into one statement per line.
 
 ## Configuration
 
-Sable intentionally exposes very few options (Black philosophy). The supported
-flags are:
+Sable intentionally exposes few options:
 
 | Flag | Default | Description |
 |------|---------|-------------|
