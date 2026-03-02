@@ -114,13 +114,13 @@ normalization).
 
 ```fortran
 ! Before
-integer, optional, parameter, intent(in) x, y, z
+integer, optional, parameter, intent(in) alpha_variable, beta_variable, gamma_variable
 
 ! After
 integer, intent(in), optional, parameter :: &
-   x, &
-   y, &
-   z
+   alpha_variable, &
+   beta_variable,  &
+   gamma_variable
 ```
 
 ### Line wrapping and continuation
