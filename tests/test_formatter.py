@@ -113,6 +113,26 @@ class TestSpacing:
         result = fmt("submodule(ccs_class) multiplier_equation_ccs\n")
         assert result.strip() == "submodule (ccs_class) multiplier_equation_ccs"
 
+    def test_space_before_paren_for_modern_construct_heads(self):
+        source = (
+            "associate(x => obj%field)\n"
+            "end associate\n"
+            "do concurrent(i=1:n)\n"
+            "end do\n"
+            "change team(newteam)\n"
+            "end team\n"
+            "select type(x)\n"
+            "type is(t)\n"
+            "end select\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        assert lines[0] == "associate (x => obj%field)"
+        assert lines[2] == "do concurrent (i = 1:n)"
+        assert lines[4] == "change team (newteam)"
+        assert lines[6] == "select type (x)"
+        assert lines[7] == "type is (t)"
+
 
 class TestPercentSplitting:
     """Lines must never be broken adjacent to a % (component access) operator."""
@@ -352,6 +372,62 @@ class TestIndentation:
         lines = result.splitlines()
         implicit_line = next(line for line in lines if line.strip() == "implicit none")
         assert implicit_line.startswith("   ")
+
+    def test_change_team_body_indented(self):
+        source = "change team (newteam)\nprint *, this_image()\nend team\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        assert lines[0] == "change team (newteam)"
+        assert lines[1].startswith("   ")
+        assert lines[2] == "end team"
+
+    def test_select_type_guards_do_not_nest(self):
+        source = (
+            "select type (x)\n"
+            "type is (t1)\n"
+            "print *, 't1'\n"
+            "class default\n"
+            "print *, 'd'\n"
+            "end select\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        type_guard = next(line for line in lines if line.strip().startswith("type is"))
+        class_guard = next(line for line in lines if line.strip().startswith("class"))
+        t1_body = next(line for line in lines if line.strip() == "print *, 't1'")
+        d_body = next(line for line in lines if line.strip() == "print *, 'd'")
+        assert not type_guard.startswith(" ")
+        assert not class_guard.startswith(" ")
+        assert t1_body.startswith("   ")
+        assert d_body.startswith("   ")
+
+    def test_select_rank_guards_do_not_nest(self):
+        source = (
+            "select rank (a)\n"
+            "rank (0)\n"
+            "print *, a\n"
+            "rank default\n"
+            "print *, 'd'\n"
+            "end select\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        rank_zero = next(line for line in lines if line.strip() == "rank (0)")
+        rank_default = next(line for line in lines if line.strip() == "rank default")
+        body_a = next(line for line in lines if line.strip() == "print *, a")
+        body_d = next(line for line in lines if line.strip() == "print *, 'd'")
+        assert not rank_zero.startswith(" ")
+        assert not rank_default.startswith(" ")
+        assert body_a.startswith("   ")
+        assert body_d.startswith("   ")
+
+    def test_enum_body_indented(self):
+        source = "enum, bind(c)\nenumerator :: red=1\nend enum\n"
+        result = fmt(source)
+        lines = result.splitlines()
+        assert lines[0] == "enum, bind(c)"
+        assert lines[1].startswith("   ")
+        assert lines[2] == "end enum"
 
 
 class TestDirectives:

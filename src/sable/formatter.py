@@ -117,6 +117,11 @@ _KEYWORD_SPACE_BEFORE_PAREN: frozenset[str] = frozenset(
         "where",
         "forall",
         "submodule",
+        "associate",
+        "concurrent",
+        "is",
+        "rank",
+        "team",
     }
 )
 
@@ -135,6 +140,7 @@ _COMPACT_TO_SPACED: dict[str, str] = {
     "endassociate": "end associate",
     "endblock": "end block",
     "endcritical": "end critical",
+    "endteam": "end team",
     "endtype": "end type",
     "endenum": "end enum",
     "endblockdata": "end block data",
@@ -196,7 +202,12 @@ def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
 # ---------------------------------------------------------------------------
 
 
-def _needs_space_before(prev: Token | None, curr: Token, paren_depth: int = 0) -> bool:
+def _needs_space_before(
+    prev: Token | None,
+    curr: Token,
+    paren_depth: int = 0,
+    prev_prev: Token | None = None,
+) -> bool:
     """Return True if a space is required before *curr*.
 
     *paren_depth* is the number of currently open parentheses/brackets.  It is
@@ -213,6 +224,15 @@ def _needs_space_before(prev: Token | None, curr: Token, paren_depth: int = 0) -
         ck == TokenKind.LPAREN
         and pk == TokenKind.KEYWORD
         and prev.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN
+    ):
+        return True
+    if (
+        ck == TokenKind.LPAREN
+        and pk == TokenKind.KEYWORD
+        and prev.text.lower() == "type"
+        and prev_prev is not None
+        and prev_prev.kind == TokenKind.KEYWORD
+        and prev_prev.text.lower() == "select"
     ):
         return True
 
@@ -305,10 +325,14 @@ _INDENT_OPEN: frozenset[str] = frozenset(
         "associate",
         "block",
         "critical",
+        "change",
         "where",
         "forall",
         "select",
         "case",
+        "class",
+        "rank",
+        "enum",
     }
 )
 
@@ -357,6 +381,8 @@ _INDENT_CLOSE: frozenset[str] = frozenset(
         "endassociate",
         "endblock",
         "endcritical",
+        "endteam",
+        "endenum",
         "end if",
         "end do",
         "end function",
@@ -370,6 +396,8 @@ _INDENT_CLOSE: frozenset[str] = frozenset(
         "end associate",
         "end block",
         "end critical",
+        "end team",
+        "end enum",
         "else",
         "elseif",
         "case",
@@ -399,8 +427,9 @@ class IndentTracker:
         if not line_tokens:
             return self.indent(), False
 
+        non_comment = self._core_tokens(line_tokens)
         first = self._first_keyword(line_tokens)
-        did_close = first in _INDENT_CLOSE
+        did_close = first in _INDENT_CLOSE or self._is_select_guard(non_comment)
         if not did_close and self._is_labelled_continue(line_tokens):
             # Legacy labelled-do termination: `10 continue` closes one DO level.
             did_close = True
@@ -410,8 +439,6 @@ class IndentTracker:
         ind = self.indent()
 
         last = line_tokens[-1].text.lower() if line_tokens else ""
-        # Comments don't count for indent
-        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         if non_comment:
             last_tok = non_comment[-1]
             last = last_tok.text.lower()
@@ -433,18 +460,11 @@ class IndentTracker:
         return ind, did_close
 
     @staticmethod
-    def _first_keyword(line_tokens: list[Token]) -> str:
-        """Return the first keyword text, skipping optional leading labels.
-
-        Supported prefixes before the first executable keyword:
-        - numeric statement labels (``10 do i = ...``)
-        - construct names (``FindPos: do i = ...``)
-        - a numeric label followed by a construct name
-          (``10 FindPos: do i = ...``)
-        """
+    def _core_tokens(line_tokens: list[Token]) -> list[Token]:
+        """Return statement tokens with labels and construct names removed."""
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         if not non_comment:
-            return ""
+            return []
         i = 0
         if non_comment[i].kind in (TokenKind.INTEGER, TokenKind.LABEL):
             i += 1
@@ -454,9 +474,38 @@ class IndentTracker:
             and non_comment[i + 1].kind == TokenKind.COLON
         ):
             i += 2
-        if i < len(non_comment) and non_comment[i].kind == TokenKind.KEYWORD:
-            return non_comment[i].text.lower()
+        return non_comment[i:]
+
+    @staticmethod
+    def _first_keyword(line_tokens: list[Token]) -> str:
+        """Return the first keyword text, skipping optional leading labels.
+
+        Supported prefixes before the first executable keyword:
+        - numeric statement labels (``10 do i = ...``)
+        - construct names (``FindPos: do i = ...``)
+        - a numeric label followed by a construct name
+          (``10 FindPos: do i = ...``)
+        """
+        core = IndentTracker._core_tokens(line_tokens)
+        if core and core[0].kind == TokenKind.KEYWORD:
+            return core[0].text.lower()
         return ""
+
+    @staticmethod
+    def _is_select_guard(non_comment: list[Token]) -> bool:
+        """Return True for select-type/rank branch selector lines."""
+        if not non_comment:
+            return False
+        first = non_comment[0].text.lower()
+        second = non_comment[1].text.lower() if len(non_comment) > 1 else ""
+        second_kind = non_comment[1].kind if len(non_comment) > 1 else None
+        if first == "type" and second == "is":
+            return True
+        if first == "class" and second in ("is", "default"):
+            return True
+        if first == "rank" and (second_kind == TokenKind.LPAREN or second == "default"):
+            return True
+        return False
 
     @staticmethod
     def _is_labelled_continue(line_tokens: list[Token]) -> bool:
@@ -503,6 +552,13 @@ class IndentTracker:
                     return True
         if first not in _INDENT_OPEN:
             return False
+        if first == "change":
+            # `change team (...)` opens a team block.
+            return (
+                len(non_comment) > 1
+                and non_comment[1].kind == TokenKind.KEYWORD
+                and non_comment[1].text.lower() == "team"
+            )
         if first == "module":
             # `module procedure ...` within an interface block is a declaration,
             # not a block opener.
@@ -516,9 +572,27 @@ class IndentTracker:
             # `type = ...` can be a regular assignment when TYPE is a variable name.
             if any(t.kind == TokenKind.OP_ASSIGN for t in non_comment):
                 return False
+            # type is (...) inside select type is a selector branch opener.
+            if len(non_comment) > 1 and non_comment[1].text.lower() == "is":
+                return True
             # type(kind_param) :: var  →  variable declaration, not a block opener
             if len(non_comment) > 1 and non_comment[1].kind == TokenKind.LPAREN:
                 return False
+        if first == "class":
+            # class(*) :: var / class(t) :: var are declarations, not blocks.
+            if len(non_comment) > 1 and non_comment[1].kind == TokenKind.LPAREN:
+                return False
+            # class is/default inside select type are selector branch openers.
+            return len(non_comment) > 1 and non_comment[1].text.lower() in (
+                "is",
+                "default",
+            )
+        if first == "rank":
+            # rank (...) / rank default inside select rank are branch openers.
+            return len(non_comment) > 1 and (
+                non_comment[1].kind == TokenKind.LPAREN
+                or non_comment[1].text.lower() == "default"
+            )
         return True
 
 
@@ -554,15 +628,17 @@ def _render_tokens(tokens: list[Token]) -> str:
     """Render a token list to a string, inserting spaces via the spacing rules."""
     parts: list[str] = []
     prev: Token | None = None
+    prev_prev: Token | None = None
     depth = 0
     for tok in tokens:
-        if _needs_space_before(prev, tok, depth):
+        if _needs_space_before(prev, tok, depth, prev_prev):
             parts.append(" ")
         parts.append(tok.text)
         if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
             depth += 1
         elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
             depth = max(0, depth - 1)
+        prev_prev = prev
         prev = tok
     return "".join(parts)
 
@@ -740,14 +816,16 @@ def _render_prefix(tokens: list[Token], start_depth: int) -> list[str]:
     """Render token prefix to spacing-aware string chunks."""
     parts: list[str] = []
     prev: Token | None = None
+    prev_prev: Token | None = None
     depth = start_depth
     for tok in tokens:
-        space = " " if _needs_space_before(prev, tok, depth) else ""
+        space = " " if _needs_space_before(prev, tok, depth, prev_prev) else ""
         parts.append(space + tok.text)
         if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
             depth += 1
         elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
             depth = max(0, depth - 1)
+        prev_prev = prev
         prev = tok
     return parts
 
@@ -758,13 +836,14 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
         return 0
 
     prev: Token | None = None
+    prev_prev: Token | None = None
     depth = start_depth
     char_count = 0
     fit_upto = len(tokens)
     depth_after: list[int] = []
 
     for idx, tok in enumerate(tokens):
-        space = " " if _needs_space_before(prev, tok, depth) else ""
+        space = " " if _needs_space_before(prev, tok, depth, prev_prev) else ""
         token_str = space + tok.text
         if char_count + len(token_str) > budget and idx > 0:
             fit_upto = idx
@@ -775,6 +854,7 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
         elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
             depth = max(0, depth - 1)
         depth_after.append(depth)
+        prev_prev = prev
         prev = tok
 
     if fit_upto == len(tokens):
@@ -1293,6 +1373,7 @@ _END_CONTINUATIONS: frozenset[str] = frozenset(
         "associate",
         "block",
         "critical",
+        "team",
         "forall",
         "enum",
     }

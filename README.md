@@ -116,6 +116,9 @@ are kept, but normalised to lower-case.
 
 - **One space** around binary operators: `=`, `==`, `/=`, `<`, `<=`, `>`,
   `>=`, `+`, `-`, `//`, `=>`, `::`.
+- **One space** between construct heads and `(` for control/selector forms:
+  `if (...)`, `associate (...)`, `do concurrent (...)`, `select type (...)`,
+  `type is (...)`, `rank (...)`, `change team (...)`.
 - **No space** around `%` (component access) and `**` (exponentiation):
   `obj%field`, `x**2`.
 - **One space** after each comma: `call foo(a, b, c)`.
@@ -128,7 +131,9 @@ are kept, but normalised to lower-case.
 - **3 spaces** per level by default *(configurable: `--indent-width N`)*.
 - Indentation increases after: `then`, `do`, `else`, `contains`, `module`,
   `program`, `function`, `subroutine`, `interface`, `type`, `select case`,
-  `associate`, `block`, `critical`, `where`, `forall`.
+  `associate`, `block`, `critical`, `where`, `forall`, `change team`,
+  `enum`, and selector guards in `select type`/`select rank` (`type is`,
+  `class is/default`, `rank (...)`/`rank default`).
 - `else` / `elseif` / `case` / `contains` dedent before the line, then
   re-indent the body.
 

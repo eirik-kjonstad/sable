@@ -50,6 +50,11 @@ class TestBasicTokens:
         assert toks[0].kind == TokenKind.KEYWORD
         assert toks[0].text == "integer"
 
+    def test_modern_keywords_recognised(self):
+        assert tokenize("concurrent")[0].kind == TokenKind.KEYWORD
+        assert tokenize("change")[0].kind == TokenKind.KEYWORD
+        assert tokenize("team")[0].kind == TokenKind.KEYWORD
+
 
 class TestOperators:
     def test_double_star(self):
