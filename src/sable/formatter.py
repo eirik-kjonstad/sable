@@ -1444,6 +1444,14 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
         return bool(non_comment and non_comment[-1].kind == TokenKind.CONTINUATION)
 
+    def _is_compiler_directive_comment(line_tokens: list[Token]) -> bool:
+        """True for standalone directive comments like `!$OMP ...`."""
+        return (
+            len(line_tokens) == 1
+            and line_tokens[0].kind == TokenKind.COMMENT
+            and line_tokens[0].text.startswith("!$")
+        )
+
     for logical_line in iter_logical_lines(tokens):
         if logical_line:
             start_line = min(tok.line for tok in logical_line)
@@ -1511,6 +1519,11 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         non_comment = [t for t in normalised if t.kind != TokenKind.COMMENT]
         if not non_comment:
+            if _is_compiler_directive_comment(normalised):
+                flush_pending(tracker.indent())
+                output_lines.append(tracker.indent() + normalised[0].text)
+                last_was_end_routine = False
+                continue
             # Comment-only or blank line: buffer until we know the next code indent
             pending.append(normalised[0].text if normalised else None)
             continue

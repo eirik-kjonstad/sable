@@ -452,6 +452,28 @@ class TestDirectives:
         assert lvec_line.startswith("      ")
         assert lsmpi_line.startswith("      ")
 
+    def test_omp_end_directive_not_dedented_by_following_end_if(self):
+        source = (
+            "subroutine s\n"
+            "if (cond) then\n"
+            "!$OMP PARALLEL DO\n"
+            "do i = 1, n\n"
+            "x(i) = y(i)\n"
+            "end do\n"
+            "!$OMP END PARALLEL DO\n"
+            "end if\n"
+            "end subroutine s\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        omp_open = next(line for line in lines if line.strip() == "!$OMP PARALLEL DO")
+        omp_end = next(
+            line for line in lines if line.strip() == "!$OMP END PARALLEL DO"
+        )
+
+        assert omp_open.startswith("      ")
+        assert omp_end.startswith("      ")
+
     def test_else_branch_resets_to_pre_if_indentation_level(self):
         source = (
             "subroutine s\n"
