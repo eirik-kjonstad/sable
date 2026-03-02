@@ -40,42 +40,42 @@ Sable recognises `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`, and
 Sable makes the following opinionated choices. They are not configurable
 unless the option is marked with *(configurable)*.
 
-### Keywords
+### Most visible changes
 
-- All Fortran keywords are emitted in **lower-case** by default *(configurable:
-  `--keyword-case upper`)*.
-- Names (variables, procedures, types) are **not** changed — their case is
-  preserved exactly as written.
+These are the style changes users usually notice first:
 
-```fortran
-! Before
-INTEGER, INTENT(IN) :: X
-
-! After
-integer, intent(in) :: X
-```
-
-### Compound END keywords
-
-Sable normalises `endif` / `enddo` / `endsubroutine` etc. to their **spaced**
-forms (`end if` / `end do` / `end subroutine`) by default *(configurable:
-`--end-keyword-form compact`)*.
+1. Keyword and operator normalization (`INTEGER` -> `integer`, `.EQ.` -> `==`,
+   `endif` -> `end if` by default).
+2. Consistent spacing and indentation across modern and legacy constructs.
+3. Deterministic wrapping for long lines, including Black-style
+   one-argument-per-line formatting for long calls/definitions.
 
 ```fortran
 ! Before
-if (x > 0) then
-  y = 1
-endif
+IF(A .EQ. B)THEN
+CALL compute(alpha_input,beta_input,gamma_input,result_output)
+ENDIF
 
 ! After
-if (x > 0) then
-  y = 1
+if (A == B) then
+   call compute(    &
+      alpha_input,  &
+      beta_input,   &
+      gamma_input,  &
+      result_output &
+   )
 end if
 ```
 
-### Relational operators
+### Keywords and operators
 
-Old-style relational operators are replaced with their modern equivalents:
+- All Fortran keywords are emitted in **lower-case** by default *(configurable:
+  `--keyword-case upper`)*.
+- Names (variables, procedures, types) are preserved exactly as written.
+- `endif` / `enddo` / `endsubroutine` etc. are normalized to spaced forms by
+  default *(configurable: `--end-keyword-form compact`)*.
+- Old-style relational operators are normalized by default *(disable with
+  `--no-normalize-operators`)*:
 
 | Old | New |
 |-----|-----|
@@ -86,139 +86,57 @@ Old-style relational operators are replaced with their modern equivalents:
 | `.GT.` | `>`  |
 | `.GE.` | `>=` |
 
-`.AND.`, `.OR.`, `.NOT.`, `.EQV.`, `.NEQV.` have no modern equivalents and
-are kept, but normalised to lower-case.
+`.AND.`, `.OR.`, `.NOT.`, `.EQV.`, `.NEQV.` are preserved (with keyword-case
+normalization).
 
-*(Disable with `--no-normalize-operators`)*
+### Spacing and indentation
 
-### Spacing
-
-- **One space** around binary operators: `=`, `==`, `/=`, `<`, `<=`, `>`,
-  `>=`, `+`, `-`, `//`, `=>`, `::`.
-- **One space** between construct heads and `(` for control/selector forms:
+- **One space** around binary operators (`=`, `==`, `/=`, `<`, `<=`, `>`, `>=`,
+  `+`, `-`, `//`, `=>`, `::`), but **no spaces** around `%` and `**`.
+- **One space** between control/selector heads and `(`:
   `if (...)`, `associate (...)`, `do concurrent (...)`, `select type (...)`,
   `type is (...)`, `rank (...)`, `change team (...)`.
-- **No space** around `%` (component access) and `**` (exponentiation):
-  `obj%field`, `x**2`.
-- **One space** after each comma: `call foo(a, b, c)`.
-- **No space** inside parentheses or brackets: `foo(a, b)` not `foo( a, b )`.
-- **No space** around `:` in array subscripts/slices: `a(1:n)`.
+- **No spaces** inside parens/brackets, and `:` spacing is context-aware:
+  `a(1:n)` and `use m, only: foo`.
 - **Two spaces** before inline comments: `x = 1  ! comment`.
+- **3 spaces** per indent level by default *(configurable: `--indent-width N`)*,
+  with correct dedent/re-indent behavior for `else`, `elseif`, `case`,
+  `contains`, `select type`, and `select rank` branches.
 
-### Indentation
-
-- **3 spaces** per level by default *(configurable: `--indent-width N`)*.
-- Indentation increases after: `then`, `do`, `else`, `contains`, `module`,
-  `program`, `function`, `subroutine`, `interface`, `type`, `select case`,
-  `associate`, `block`, `critical`, `where`, `forall`, `change team`,
-  `enum`, and selector guards in `select type`/`select rank` (`type is`,
-  `class is/default`, `rank (...)`/`rank default`).
-- `else` / `elseif` / `case` / `contains` dedent before the line, then
-  re-indent the body.
-
-```fortran
-do i = 1, n
-   do j = 1, m
-      a(i, j) = i + j
-   end do
-end do
-```
-
-### Line length and continuation
+### Line wrapping and continuation
 
 Lines exceeding **100 characters** *(configurable: `--line-length N`)* are
-broken with Fortran continuation markers (`&`). Continuation lines are
-indented by one additional level.
+wrapped with Fortran continuation markers (`&`).
 
-When choosing line-break points, Sable uses deterministic priority rules:
-top-level commas first, then assignment (`=`), then low-precedence operators
-(`.or.`, `.and.`, `+`, `-`, `//`), before falling back to greedy splitting.
+- Split priority is deterministic: top-level commas, then assignment (`=`), then
+  low-precedence operators (`.or.`, `.and.`, `+`, `-`, `//`), then greedy split.
+- Long multi-argument calls/definitions are exploded one-argument-per-line.
+- Existing multiline argument lists stay exploded ("sticky multiline").
+- Single-line `if` statements stay on one line when they fit; otherwise Sable
+  splits between condition and action.
+- Long strings are split using valid Fortran in-string continuation, and existing
+  in-string continuations are normalized without changing string values.
+- Wrap logic avoids problematic splits in `%` chains (`a%b%c`) and around
+  `(/ ... /)` array-constructor delimiters, and avoids leading commas/operators
+  on continuation lines where possible.
 
-**Argument-list explosion.** When a call, definition, or similar construct has
-multiple arguments and is too long to fit on one line, Sable explodes it
-one-argument-per-line (Black style), with `&` markers aligned in a column:
+### Comments, routines, and directives
 
-```fortran
-! Before (too long)
-call compute(alpha_input, beta_input, gamma_input, result_output)
+- Consecutive `subroutine`/`function` definitions in `module`/`contains` blocks
+  are separated by exactly **two blank lines** (comment-only gaps are preserved).
+- Standalone comments and blank lines are aligned with the following code line.
+- Preprocessor directives (`#ifdef`, `#elif`, `#else`, `#endif`, `#define`, ...)
+  are emitted unchanged at **column 0**.
+- Compiler directive comments like `!$OMP ...` are preserved and kept aligned
+  with surrounding code.
+- `! sable: off` / `! sable: on` disables formatting for verbatim regions.
 
-! After
-call compute(    &
-   alpha_input,  &
-   beta_input,   &
-   gamma_input,  &
-   result_output &
-)
-```
+### Other guarantees
 
-**Sticky multiline argument lists.** If an argument list is already written
-across multiple physical lines in the input, Sable keeps it exploded even when
-it would fit on one line under the configured line length.
-
-**String literal splitting.** String literals that are too long to fit on one
-physical line are split using Fortran in-string continuation:
-
-```fortran
-description = &
-   'A long description that would otherwise exceed the line &
-   &length limit is split here.'
-```
-
-The in-string `&` at the end of a physical line and the resuming `&` at the
-start of the next are stripped when the file is re-read, so the string value
-is preserved exactly.
-
-**Single-line `if` statements** that fit within the line limit are kept on one
-line. If they are too long, the action is split to a continuation line:
-
-```fortran
-! Short: kept as-is
-if (x > 0) y = y + 1
-
-! Long: split at the action boundary
-if (norm2(residual) > threshold) &
-   call handle_convergence_failure(solver)
-```
-
-### Blank lines between routines
-
-Consecutive `subroutine` and `function` definitions within a `module` or
-`contains` block are separated by exactly **two blank lines**. Comment-only
-gaps are left as-is.
-
-### Comment indentation
-
-Standalone comment lines and blank lines between statements are held in a
-buffer and emitted at the indentation level of the **next** code line, so
-comments always align with the code they precede.
-
-### Preprocessor directives
-
-Lines beginning with `#` (e.g. `#ifdef`, `#define`, `#endif`) are passed
-through unchanged and always emitted at **column 0**, regardless of the
-surrounding indentation level.
-
-### Formatting control comments
-
-Use `! sable: off` and `! sable: on` to disable formatting for a region.
-Everything inside that region is emitted verbatim.
-
-### Semicolons
-
-Semicolons used as statement separators are expanded to separate lines:
-
-```fortran
-! Before
-x = 1; y = 2
-
-! After
-x = 1
-y = 2
-```
-
-### File endings
-
-Files always end with exactly **one newline** character.
+- Semicolon-separated statements are expanded to separate lines.
+- Output is idempotent: formatting an already formatted file produces the same
+  result.
+- Files always end with exactly **one newline**.
 
 ## Configuration
 
