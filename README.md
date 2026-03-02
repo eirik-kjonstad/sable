@@ -27,9 +27,11 @@ sable --check src/
 # Preview changes as a unified diff
 sable --diff src/
 
-# Format from stdin (stdout result)
-sable - < code.f90
-sable --stdin-filename my_module.f90 - < code.f90
+# Format piped input (Sable reads stdin when no files are passed)
+cat code.f90 | sable
+
+# Optional: label stdin input in diagnostics
+cat code.f90 | sable --stdin-filename my_module.f90
 ```
 
 Sable recognises `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`, and
