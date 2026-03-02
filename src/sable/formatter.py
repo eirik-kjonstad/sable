@@ -633,29 +633,29 @@ _DECL_TYPE_KEYWORDS: frozenset[str] = frozenset(
 )
 
 _DECL_ATTRIBUTE_ORDER: dict[str, int] = {
-    "intent": 0,
-    "optional": 1,
-    "parameter": 2,
-    "allocatable": 3,
-    "pointer": 4,
-    "target": 5,
-    "value": 6,
-    "save": 7,
-    "public": 8,
-    "private": 9,
-    "protected": 10,
-    "volatile": 11,
-    "asynchronous": 12,
-    "contiguous": 13,
-    "dimension": 14,
-    "codimension": 15,
-    "external": 16,
-    "intrinsic": 17,
-    "bind": 18,
-    "pass": 19,
-    "nopass": 20,
-    "deferred": 21,
-    "non_overridable": 22,
+    "dimension": 0,
+    "codimension": 1,
+    "allocatable": 2,
+    "pointer": 3,
+    "target": 4,
+    "contiguous": 5,
+    "optional": 6,
+    "parameter": 7,
+    "value": 8,
+    "save": 9,
+    "public": 10,
+    "private": 11,
+    "protected": 12,
+    "volatile": 13,
+    "asynchronous": 14,
+    "external": 15,
+    "intrinsic": 16,
+    "bind": 17,
+    "pass": 18,
+    "nopass": 19,
+    "deferred": 20,
+    "non_overridable": 21,
+    "intent": 22,
 }
 _DECL_ATTRIBUTE_DEFAULT_ORDER = len(_DECL_ATTRIBUTE_ORDER)
 
@@ -1514,7 +1514,7 @@ def render_logical_line(
 
     decl = _parse_declaration(body)
     if decl is not None and len(decl.entities) > 1:
-        should_explode = decl.has_attributes or len(full_line) > cfg.line_length
+        should_explode = len(full_line) > cfg.line_length
         if should_explode:
             step = cfg.indent_width if continuation_step is None else continuation_step
             continuation_indent = indent + " " * step

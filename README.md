@@ -109,7 +109,7 @@ normalization).
 
 - Typed declarations are normalized to use `::`.
 - Declaration attributes are ordered canonically (for example,
-  `intent(...)`, then `optional`, then `dimension(:,:)`).
+  `dimension(:,:)`, then `optional`, with `intent(...)` last).
 - Attributed or long multi-entity declarations are emitted one entity per line.
 
 ### Line wrapping and continuation

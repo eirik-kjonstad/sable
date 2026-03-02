@@ -140,18 +140,29 @@ class TestDeclarationCanonicalization:
         assert result.splitlines() == ["integer :: x", "real(kind = 8) :: y"]
 
     def test_canonical_attribute_order(self):
-        result = fmt("integer, optional, parameter, intent(in) :: x\n")
-        assert result.strip() == "integer, intent(in), optional, parameter :: x"
+        result = fmt("integer, optional, parameter, intent(in), dimension(:,:) :: x\n")
+        assert (
+            result.strip()
+            == "integer, dimension(:, :), optional, parameter, intent(in) :: x"
+        )
 
     def test_attributed_declaration_explodes_one_entity_per_line(self):
-        src = "integer, optional :: a, b, c\n"
-        result = fmt(src)
+        src = "integer, optional :: alpha_variable, beta_variable, gamma_variable\n"
+        result = fmt(src, line_length=30)
         assert result.splitlines() == [
             "integer, optional :: &",
-            "   a, &",
-            "   b, &",
-            "   c",
+            "   alpha_variable, &",
+            "   beta_variable, &",
+            "   gamma_variable",
         ]
+
+    def test_attributed_declaration_does_not_explode_when_it_fits(self):
+        src = "real(dp), pointer, dimension(:, :, :, :) :: g_vvvv_order_p, g_vvvv_r4\n"
+        result = fmt(src, line_length=100)
+        assert (
+            result.strip()
+            == "real(dp), dimension(:, :, :, :), pointer :: g_vvvv_order_p, g_vvvv_r4"
+        )
 
     def test_long_declaration_explodes_one_entity_per_line(self):
         src = "integer alpha_variable, beta_variable, gamma_variable, delta_variable\n"
