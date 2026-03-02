@@ -140,6 +140,25 @@ wrapped with Fortran continuation markers (`&`).
   result.
 - Files always end with exactly **one newline**.
 
+## Style charter
+
+Sable is intentionally opinionated. The project direction is to keep a small,
+stable set of formatting rules with predictable output:
+
+- **Deterministic rewrites**: the same source always formats the same way.
+- **Canonical syntax normalization**: keyword casing, end-keyword forms, and
+  relational operators are normalized consistently.
+- **Single multiline style**: when calls/definitions wrap, Sable prefers a
+  one-item-per-line layout with explicit continuation markers.
+- **No alignment-by-column layouts**: formatting should stay stable even when
+  names are renamed or argument lengths change.
+- **Statement atomization**: multi-statement lines are split into one statement
+  per line.
+- **Structural consistency**: routine spacing, comment indentation, directive
+  placement, and trailing newlines are handled uniformly.
+- **Modern free-form focus**: Sable is designed for modern free-form Fortran
+  codebases.
+
 ## Configuration
 
 Sable intentionally exposes very few options (Black philosophy). The supported
