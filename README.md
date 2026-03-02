@@ -6,7 +6,7 @@ An opinionated Fortran formatter, inspired by [Black](https://github.com/psf/bla
 > — Kurt Vonnegut, *Slaughterhouse-Five*
 
 Sable applies a consistent, non-negotiable style to Fortran source files so
-that code review can focus on logic rather than style debates.
+code review can focus on logic rather than style debates.
 
 ## Installation
 
@@ -14,43 +14,22 @@ that code review can focus on logic rather than style debates.
 pip install sable
 ```
 
-## Development checks
-
-```bash
-pip install -e ".[dev]"
-pre-commit install
-pre-commit run --all-files
-```
-
-Pre-commit runs:
-
-- `black` (formatting)
-- `ruff` (lint-only; no Ruff formatting)
-
 ## Usage
 
 ```bash
-# Format files in place
+# Format a file or directory in place
 sable my_module.f90
-
-# Format all Fortran files in a directory (recursively)
 sable src/
 
-# Format multiple files and directories
-sable src/ tests/module.f90
-
-# Check without modifying (exit 1 if any file would change)
+# Check formatting without changing files (exit 1 if changes are needed)
 sable --check src/
 
-# Show a unified diff of changes
-sable --diff my_module.f90
+# Preview changes as a unified diff
+sable --diff src/
 
-# Format stdin, write to stdout
-cat code.f90 | sable
-cat code.f90 | sable -
-
-# Format stdin and label it in diagnostics
-cat code.f90 | sable --stdin-filename my_module.f90
+# Format from stdin (stdout result)
+sable - < code.f90
+sable --stdin-filename my_module.f90 - < code.f90
 ```
 
 Sable recognises `.f90`, `.F90`, `.f95`, `.F95`, `.f03`, `.F03`, `.f08`, and
