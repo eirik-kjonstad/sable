@@ -143,6 +143,9 @@ wrapped with Fortran continuation markers (`&`).
 ### Other guarantees
 
 - Semicolon-separated statements are expanded to separate lines.
+- Sable always produces output. If a construct cannot be wrapped below the
+  configured line length, Sable still emits valid formatted code (it may keep an
+  unavoidable long line), rather than failing.
 - Output is idempotent: formatting an already formatted file produces the same
   result.
 - Files always end with exactly **one newline**.

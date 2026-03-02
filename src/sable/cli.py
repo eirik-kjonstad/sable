@@ -78,6 +78,22 @@ def _summary(n_changed: int, n_unchanged: int, n_errors: int, check: bool) -> st
     return ", ".join(parts) + "."
 
 
+def _style_diff_line(line: str) -> str:
+    if line.startswith("@@"):
+        return click.style(line, fg="cyan")
+    if line.startswith("--- ") or line.startswith("+++ "):
+        return click.style(line, fg="cyan", bold=True)
+    if line.startswith("-"):
+        return click.style(line, fg="red")
+    if line.startswith("+"):
+        return click.style(line, fg="green")
+    return line
+
+
+def _colorize_unified_diff(delta: list[str]) -> str:
+    return "".join(_style_diff_line(line) for line in delta)
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
@@ -247,13 +263,15 @@ def main(
 
                 original_lines = source.splitlines(keepends=True)
                 formatted_lines = formatted.splitlines(keepends=True)
-                delta = difflib.unified_diff(
-                    original_lines,
-                    formatted_lines,
-                    fromfile=f"a/{label}",
-                    tofile=f"b/{label}",
+                delta = list(
+                    difflib.unified_diff(
+                        original_lines,
+                        formatted_lines,
+                        fromfile=f"a/{label}",
+                        tofile=f"b/{label}",
+                    )
                 )
-                click.echo("".join(delta), nl=False)
+                click.echo(_colorize_unified_diff(delta), nl=False)
         elif check:
             if changed:
                 click.echo(f"{SYM_SKIP} {_fmt_label(label)}")

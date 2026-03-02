@@ -60,6 +60,18 @@ def test_diff_mode_prints_unified_diff_without_writing(tmp_path):
     assert src.read_text(encoding="utf-8") == original
 
 
+def test_diff_mode_is_colorized(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text("INTEGER::X\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["--diff", str(src)], color=True)
+
+    assert result.exit_code == 0
+    assert "\x1b[31m-INTEGER::X" in result.output
+    assert "\x1b[32m+integer :: X" in result.output
+
+
 def test_formats_stdin_to_stdout_without_summary():
     runner = CliRunner()
     result = runner.invoke(main, [], input="INTEGER::X\n")
