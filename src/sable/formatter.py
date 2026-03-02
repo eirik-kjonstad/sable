@@ -619,6 +619,260 @@ _LOW_PRECEDENCE_SPLIT_OPS: frozenset[TokenKind] = frozenset(
 """Operators preferred as line-break boundaries after commas/assignment."""
 
 
+_DECL_TYPE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "integer",
+        "real",
+        "complex",
+        "logical",
+        "character",
+        "type",
+        "class",
+        "double",
+    }
+)
+
+_DECL_ATTRIBUTE_ORDER: dict[str, int] = {
+    "intent": 0,
+    "optional": 1,
+    "parameter": 2,
+    "allocatable": 3,
+    "pointer": 4,
+    "target": 5,
+    "value": 6,
+    "save": 7,
+    "public": 8,
+    "private": 9,
+    "protected": 10,
+    "volatile": 11,
+    "asynchronous": 12,
+    "contiguous": 13,
+    "dimension": 14,
+    "codimension": 15,
+    "external": 16,
+    "intrinsic": 17,
+    "bind": 18,
+    "pass": 19,
+    "nopass": 20,
+    "deferred": 21,
+    "non_overridable": 22,
+}
+_DECL_ATTRIBUTE_DEFAULT_ORDER = len(_DECL_ATTRIBUTE_ORDER)
+
+
+@dataclass
+class _DeclarationParts:
+    prefix_tokens: list[Token]
+    entities: list[list[Token]]
+    has_attributes: bool
+    anchor: Token
+
+
+def _make_token(kind: TokenKind, text: str, anchor: Token) -> Token:
+    return Token(kind, text, anchor.line, anchor.col)
+
+
+def _split_top_level_commas(tokens: list[Token]) -> list[list[Token]]:
+    parts: list[list[Token]] = []
+    current: list[Token] = []
+    depth = 0
+    for tok in tokens:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+            current.append(tok)
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+            current.append(tok)
+        elif tok.kind == TokenKind.COMMA and depth == 0:
+            if current:
+                parts.append(current)
+            current = []
+        else:
+            current.append(tok)
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _consume_paren_group(tokens: list[Token], start: int) -> int:
+    if start >= len(tokens) or tokens[start].kind != TokenKind.LPAREN:
+        return start
+    depth = 0
+    i = start
+    while i < len(tokens):
+        if tokens[i].kind == TokenKind.LPAREN:
+            depth += 1
+        elif tokens[i].kind == TokenKind.RPAREN:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return start
+
+
+def _type_spec_end(tokens: list[Token]) -> int | None:
+    if not tokens or tokens[0].kind != TokenKind.KEYWORD:
+        return None
+
+    first = tokens[0].text.lower()
+    if first not in _DECL_TYPE_KEYWORDS:
+        return None
+
+    i = 1
+    if first == "double":
+        if (
+            len(tokens) < 2
+            or tokens[1].kind != TokenKind.KEYWORD
+            or tokens[1].text.lower() != "precision"
+        ):
+            return None
+        i = 2
+
+    if i < len(tokens) and tokens[i].kind == TokenKind.LPAREN:
+        next_i = _consume_paren_group(tokens, i)
+        if next_i == i:
+            return None
+        i = next_i
+
+    return i
+
+
+def _is_attribute_segment(segment: list[Token]) -> bool:
+    if not segment:
+        return False
+    if segment[0].kind not in (TokenKind.KEYWORD, TokenKind.NAME):
+        return False
+    return segment[0].text.lower() in _DECL_ATTRIBUTE_ORDER
+
+
+def _attribute_sort_key(segment: list[Token], original_index: int) -> tuple[int, int]:
+    if segment and segment[0].kind in (TokenKind.KEYWORD, TokenKind.NAME):
+        key = _DECL_ATTRIBUTE_ORDER.get(
+            segment[0].text.lower(), _DECL_ATTRIBUTE_DEFAULT_ORDER
+        )
+        return (key, original_index)
+    return (_DECL_ATTRIBUTE_DEFAULT_ORDER, original_index)
+
+
+def _join_comma_segments(segments: list[list[Token]], anchor: Token) -> list[Token]:
+    out: list[Token] = []
+    for i, segment in enumerate(segments):
+        if i > 0:
+            out.append(_make_token(TokenKind.COMMA, ",", anchor))
+        out.extend(segment)
+    return out
+
+
+def _parse_declaration(tokens: list[Token]) -> _DeclarationParts | None:
+    core = IndentTracker._core_tokens(tokens)
+    if not core or len(core) != len(tokens):
+        return None
+    if core[0].kind != TokenKind.KEYWORD:
+        return None
+
+    first = core[0].text.lower()
+    if first not in _DECL_TYPE_KEYWORDS:
+        return None
+    if IndentTracker._is_block_opener(first, core):
+        return None
+
+    type_end = _type_spec_end(core)
+    if type_end is None:
+        return None
+
+    anchor = core[0]
+    colon_idx = next(
+        (i for i, tok in enumerate(core) if tok.kind == TokenKind.DOUBLE_COLON), None
+    )
+
+    attributes: list[list[Token]] = []
+    entity_tokens: list[Token] = []
+
+    has_explicit_colon = colon_idx is not None
+
+    if has_explicit_colon:
+        attributes = _split_top_level_commas(core[type_end:colon_idx])
+        entity_tokens = core[colon_idx + 1 :]
+    else:
+        i = type_end
+        entity_start: int | None = None
+
+        while i < len(core):
+            if core[i].kind != TokenKind.COMMA:
+                entity_start = i
+                break
+
+            j = i + 1
+            depth = 0
+            while j < len(core):
+                tok = core[j]
+                if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+                    depth += 1
+                elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+                    depth = max(0, depth - 1)
+                elif tok.kind == TokenKind.COMMA and depth == 0:
+                    break
+                j += 1
+
+            segment = core[i + 1 : j]
+            if _is_attribute_segment(segment):
+                attributes.append(segment)
+                i = j
+                continue
+
+            entity_start = i + 1
+            break
+
+        if entity_start is None:
+            return None
+        entity_tokens = core[entity_start:]
+
+    entities = _split_top_level_commas(entity_tokens)
+    if not entities:
+        return None
+    if not has_explicit_colon and entities[0][0].kind != TokenKind.NAME:
+        return None
+
+    indexed_attrs = list(enumerate(attributes))
+    sorted_attrs = [
+        seg
+        for _idx, seg in sorted(
+            indexed_attrs, key=lambda x: _attribute_sort_key(x[1], x[0])
+        )
+    ]
+
+    prefix_tokens = list(core[:type_end])
+    if sorted_attrs:
+        prefix_tokens.append(_make_token(TokenKind.COMMA, ",", anchor))
+        prefix_tokens.extend(_join_comma_segments(sorted_attrs, anchor))
+
+    return _DeclarationParts(
+        prefix_tokens=prefix_tokens,
+        entities=entities,
+        has_attributes=bool(sorted_attrs),
+        anchor=anchor,
+    )
+
+
+def _canonicalise_declaration_tokens(tokens: list[Token]) -> list[Token]:
+    comment: Token | None = None
+    body = tokens
+    if body and body[-1].kind == TokenKind.COMMENT:
+        comment = body[-1]
+        body = body[:-1]
+
+    decl = _parse_declaration(body)
+    if decl is None:
+        return tokens
+
+    canonical = list(decl.prefix_tokens)
+    canonical.append(_make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor))
+    canonical.extend(_join_comma_segments(decl.entities, decl.anchor))
+    if comment is not None:
+        canonical.append(comment)
+    return canonical
+
+
 # ---------------------------------------------------------------------------
 # Line rendering
 # ---------------------------------------------------------------------------
@@ -1258,6 +1512,30 @@ def render_logical_line(
     trailing = " &" if force_trailing_continuation else ""
     full_line = indent + line_body + trailing + comment_str
 
+    decl = _parse_declaration(body)
+    if decl is not None and len(decl.entities) > 1:
+        should_explode = decl.has_attributes or len(full_line) > cfg.line_length
+        if should_explode:
+            step = cfg.indent_width if continuation_step is None else continuation_step
+            continuation_indent = indent + " " * step
+            header_tokens = decl.prefix_tokens + [
+                _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
+            ]
+            lines = [indent + _render_tokens(header_tokens) + " &"]
+
+            for i, entity in enumerate(decl.entities):
+                is_last = i == len(decl.entities) - 1
+                suffix = "" if is_last else ","
+                entity_line = continuation_indent + _render_tokens(entity) + suffix
+                if is_last:
+                    if force_trailing_continuation:
+                        entity_line += " &"
+                    entity_line += comment_str
+                else:
+                    entity_line += " &"
+                lines.append(entity_line)
+            return lines
+
     # Preserve manually multiline argument lists even when they fit on one line.
     if prefer_exploded_arg_list:
         expanded = _try_expand_arg_list(body, comment, indent, cfg)
@@ -1550,6 +1828,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         logical_line = merge_end_keywords(logical_line, cfg)
         normalised = [normalise(t) for t in logical_line]
+        normalised = _canonicalise_declaration_tokens(normalised)
 
         first_raw = raw_span[0] if raw_span else ""
         control_match = _FORMAT_CONTROL_RE.match(first_raw)

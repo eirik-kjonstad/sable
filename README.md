@@ -105,6 +105,24 @@ normalization).
   with correct dedent/re-indent behavior for `else`, `elseif`, `case`,
   `contains`, `select type`, and `select rank` branches.
 
+### Declaration canonicalization
+
+- Typed declarations are normalized to use `::`.
+- Declaration attributes are ordered canonically (for example,
+  `intent(...)`, then `optional`, then `parameter`).
+- Attributed or long multi-entity declarations are emitted one entity per line.
+
+```fortran
+! Before
+integer, optional, parameter, intent(in) x, y, z
+
+! After
+integer, intent(in), optional, parameter :: &
+   x, &
+   y, &
+   z
+```
+
 ### Line wrapping and continuation
 
 Lines exceeding **100 characters** *(configurable: `--line-length N`)* are

@@ -134,6 +134,37 @@ class TestSpacing:
         assert lines[7] == "type is (t)"
 
 
+class TestDeclarationCanonicalization:
+    def test_inserts_double_colon_for_typed_declaration(self):
+        result = fmt("integer x\nreal(kind=8) y\n")
+        assert result.splitlines() == ["integer :: x", "real(kind = 8) :: y"]
+
+    def test_canonical_attribute_order(self):
+        result = fmt("integer, optional, parameter, intent(in) :: x\n")
+        assert result.strip() == "integer, intent(in), optional, parameter :: x"
+
+    def test_attributed_declaration_explodes_one_entity_per_line(self):
+        src = "integer, optional :: a, b, c\n"
+        result = fmt(src)
+        assert result.splitlines() == [
+            "integer, optional :: &",
+            "   a, &",
+            "   b, &",
+            "   c",
+        ]
+
+    def test_long_declaration_explodes_one_entity_per_line(self):
+        src = "integer alpha_variable, beta_variable, gamma_variable, delta_variable\n"
+        result = fmt(src, line_length=50)
+        assert result.splitlines() == [
+            "integer :: &",
+            "   alpha_variable, &",
+            "   beta_variable, &",
+            "   gamma_variable, &",
+            "   delta_variable",
+        ]
+
+
 class TestPercentSplitting:
     """Lines must never be broken adjacent to a % (component access) operator."""
 
@@ -1433,7 +1464,7 @@ class TestLineBreakPriority:
         result = fmt(src, line_length=44)
         lines = result.splitlines()
         assert len(lines) > 1
-        assert lines[0].rstrip().endswith(", &")
+        assert lines[0].rstrip().endswith(":: &")
         assert not any(
             line.rstrip().endswith("= &") for line in lines
         )  # ensure comma wins here
