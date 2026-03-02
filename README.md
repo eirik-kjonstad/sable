@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/sable-logo.svg" alt="Sable logo" width="720">
+  <img src="assets/sable-logo.svg" alt="Sable logo" width="520">
 </p>
 
 # sable
