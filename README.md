@@ -13,7 +13,7 @@ focus on code instead of formatting.
 ## Installation
 
 ```bash
-pip install sable
+pip install sable-fortran
 ```
 
 ## Usage
