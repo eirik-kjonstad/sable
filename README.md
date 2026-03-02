@@ -249,15 +249,6 @@ flags are:
 | `--end-keyword-form` | `spaced` | `spaced` or `compact` |
 | `--no-normalize-operators` | off | Keep old-style relational operators |
 
-## Roadmap
-
-- [ ] `pyproject.toml` / `sable.toml` configuration file support
-- [ ] Alignment of `::` in declaration blocks
-- [ ] `USE` statement sorting and deduplication
-- [ ] `IMPLICIT NONE` insertion
-- [ ] Fixed-form (Fortran 77) source support
-- [x] Pre-commit hook integration
-
 ## Name
 
 *Sable* is heraldic for black — a nod to Black, the Python formatter that
