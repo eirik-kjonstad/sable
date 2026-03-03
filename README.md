@@ -47,13 +47,25 @@ and `.F08` files.
 
 ## What Sable changes
 
-- Normalizes keyword/operator style (`INTEGER` -> `integer`, `.EQ.` -> `==`,
-  `endif` -> `end if` by default).
-- Applies consistent spacing and indentation.
-- Wraps long lines deterministically (including one-argument-per-line layouts).
-- Canonicalizes declarations (`::`, stable attribute order).
+- Rewrites source to one consistent, project-wide style.
+- Applies consistent whitespace, indentation, and line wrapping.
+- Normalizes modern free-form Fortran syntax and layout into stable forms.
 - Preserves directives and formatting-off regions (`! sable: off` / `on`).
 - Guarantees idempotent output with exactly one trailing newline.
+
+## Formatting decisions (and why)
+
+Sable favors deterministic output over hand-tuned layout and aims to minimize re-spacing diffs and yield a unified style. This leads to some intentional choices that can look unusual at first:
+
+- **Brutal spacing normalization**: manual visual alignment is not preserved.
+- **No grouped alignment**: Sable does not vertically align `::`, `=>`, `=`, etc., across lines.
+- **Canonical declarations**: typed declarations use `::` with stable attribute ordering.
+- **Modern relational operators by default**: `.EQ.`/`.NE.`/... become `==`/`/=`/... .
+- **Standard keyword forms**: defaults are lower-case keywords and spaced end forms (`end if`, `end do`).
+- **Deterministic wrapping**: line breaks follow fixed rules rather than per-line aesthetics.
+- **Tight `%` and `**`**: component access and exponentiation stay unspaced (`a%b`, `x**2`).
+
+Use `--safe` for lower-risk migration first, then full mode for complete normalization.
 
 ```fortran
 ! Before
@@ -63,10 +75,10 @@ ENDIF
 
 ! After
 if (A == B) then
-   call compute(    &
-      alpha_input,  &
-      beta_input,   &
-      gamma_input,  &
+   call compute( &
+      alpha_input, &
+      beta_input, &
+      gamma_input, &
       result_output &
    )
 end if
@@ -74,7 +86,7 @@ end if
 
 ## Formatting rules (quick reference)
 
-| Old | New |
+| Input | Output (default) |
 |-----|-----|
 | `.EQ.` | `==` |
 | `.NE.` | `/=` |
@@ -82,17 +94,17 @@ end if
 | `.LE.` | `<=` |
 | `.GT.` | `>`  |
 | `.GE.` | `>=` |
+| `endif` | `end if` |
+| `integer x` | `integer :: x` |
 
-- Keywords are lower-case by default (`--keyword-case upper` to change).
-- Names are preserved exactly as written.
-- End keywords use spaced forms by default (`end if`, `end do`; configurable).
-- `.AND.`, `.OR.`, `.NOT.`, `.EQV.`, `.NEQV.` are preserved.
-- One space around most binary operators; no spaces around `%` or `**`.
-- No spaces inside parens/brackets.
-- Two spaces before inline comments (`x = 1  ! note`).
-- Default indent is 3 spaces (`--indent-width` to change).
-- Long lines wrap with `&` using deterministic split rules (`--line-length`).
-- Multi-statement lines split into one statement per line.
+- Keywords are lower-case by default (`--keyword-case upper` to change); identifier spelling/case is preserved.
+- End keywords default to spaced forms (`end if`, `end do`; configurable).
+- One space around most binary operators and after commas; `%` and `**` stay tight.
+- No spaces inside `()`/`[]`, except required construct-head spacing (`if (...)`, `select type (...)`).
+- Declarations are canonicalized (`::` inserted and attributes emitted in stable order).
+- Inline comments are separated from code by two spaces (`x = 1  ! note`).
+- Long lines wrap deterministically with `&`; `;`-separated statements are emitted one per line.
+- Preprocessor directives stay at column 0, and output is idempotent with one trailing newline.
 
 ## Configuration
 
@@ -107,11 +119,6 @@ Sable intentionally exposes few options:
 | `--no-normalize-operators` | off | Keep old-style relational operators |
 | `--safe` | off | Migration mode; skip non-safe syntax/canonicalization rewrites |
 | `--quiet` | off | Suppress non-error status output |
-
-## Name
-
-*Sable* is heraldic for black — a nod to Black, the Python formatter that
-inspired this project.
 
 ## License
 

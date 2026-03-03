@@ -704,7 +704,7 @@ class TestContinuationWithComments:
         lines = result.splitlines()
         at_idx = lines.index("   !     At:")
         before_at = lines[:at_idx]
-        assert before_at[-1] == "   !"
+        assert before_at[-1] == ""
         assert before_at[-2].endswith("&")
         assert before_at[-2].strip() != "&"
         assert not any(line.strip() == "&" for line in before_at)
@@ -735,11 +735,11 @@ class TestContinuationWithComments:
         at_idx = lines.index("!     At:")
         before_at = lines[:at_idx]
 
-        assert lines[0] == "!"
+        assert lines[0] == ""
         assert lines[1] == "!     Po:"
-        assert lines[2] == "!"
+        assert lines[2] == ""
         assert any("208.982404E0_realk" in line for line in before_at)
-        assert before_at[-1] == "!"
+        assert before_at[-1] == ""
         assert before_at[-2].endswith("&")
         assert before_at[-2].strip() != "&"
         assert not any(line.strip() == "&" for line in before_at)
@@ -754,14 +754,13 @@ class TestContinuationWithComments:
         )
         result = fmt(source)
         lines = result.splitlines()
-        assert len(lines) == 4
+        assert len(lines) == 3
         assert "0.000000E0_realk" in lines[0]
         assert lines[0].endswith("&")
         assert not lines[0].lstrip().startswith("&")
         assert "  !" not in lines[0]
-        assert lines[1] == "!"
+        assert lines[1] == ""
         assert lines[2] == "!     At:"
-        assert lines[3] == "!"
 
     def test_leading_continuation_removed_after_comment_only_lines(self):
         source = (
@@ -944,6 +943,22 @@ class TestRoutineSeparation:
 
 
 class TestCommentIndentation:
+    def test_standalone_breathing_comment_lines_become_blank_lines(self):
+        source = (
+            "!\n"
+            "point=>work_point_end_int(1:int_length)\n"
+            "!\n"
+            "current=>list_head\n"
+            "!\n"
+        )
+        result = fmt(source)
+        assert result == (
+            "\n"
+            "point => work_point_end_int(1:int_length)\n"
+            "\n"
+            "current => list_head\n"
+        )
+
     def test_comment_follows_next_code_indent(self):
         source = "subroutine foo()\n! doc\nimplicit none\nend subroutine foo\n"
         result = fmt(source)
@@ -1010,9 +1025,9 @@ class TestArgListExpansion:
         assert "argument_delta" in lines[4] and lines[4].endswith(" &")
         # Closing ) on its own line at original indent
         assert lines[5] == ")"
-        # All & symbols are vertically aligned (same column)
+        # Ampersands are not vertically aligned; avoid padding churn.
         amp_cols = [line.rindex("&") for line in lines[:5]]
-        assert len(set(amp_cols)) == 1
+        assert len(set(amp_cols)) > 1
 
     def test_short_call_stays_single_line(self):
         result = fmt("call foo(a, b, c)\n")
