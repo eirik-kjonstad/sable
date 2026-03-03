@@ -63,7 +63,7 @@ Sable favors deterministic output over hand-tuned layout to minimize diffs and y
 - **No grouped `::`/`=>`/etc. alignment**: declarations are canonicalized, but columns are not aligned.
 - **Declarations are canonical**: typed declarations use `::` with stable attribute order.
 - **Relational operators are modernized**: `.EQ.`/`.NE.`/... become `==`/`/=`/... by default.
-- **Keyword forms are standardized**: defaults are lower-case keywords and spaced end forms (`end if`, `end do`).
+- **Keyword forms are standardized**: defaults are lower-case and spaced end forms (`end if`, `end do`).
 - **Wrapping is rule-based**: line breaks are deterministic, not style-tuned per line.
 - **Operator spacing is consistent**: most binary operators are spaced; `%` and `**` stay tight.
 
