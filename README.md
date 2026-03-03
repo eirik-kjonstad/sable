@@ -120,11 +120,6 @@ Sable intentionally exposes few options:
 | `--safe` | off | Migration mode; skip non-safe syntax/canonicalization rewrites |
 | `--quiet` | off | Suppress non-error status output |
 
-## Name
-
-*Sable* is heraldic for black — a nod to Black, the Python formatter that
-inspired this project.
-
 ## License
 
 MIT
