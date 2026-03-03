@@ -47,25 +47,23 @@ and `.F08` files.
 
 ## What Sable changes
 
-- Normalizes keyword/operator style (`INTEGER` -> `integer`, `.EQ.` -> `==`,
-  `endif` -> `end if` by default).
-- Applies consistent spacing and indentation.
-- Wraps long lines deterministically (including one-argument-per-line layouts).
-- Canonicalizes declarations (`::`, stable attribute order).
+- Rewrites source to one consistent, project-wide style.
+- Applies consistent whitespace, indentation, and line wrapping.
+- Normalizes modern free-form Fortran syntax and layout into stable forms.
 - Preserves directives and formatting-off regions (`! sable: off` / `on`).
 - Guarantees idempotent output with exactly one trailing newline.
 
 ## Formatting decisions (and why)
 
-Sable favors deterministic output over hand-tuned layout to minimize diffs and yield a predictable style.
+Sable favors deterministic output over hand-tuned layout and aims to minimize re-spacing diffs and yield a unified style. This leads to some intentional choices that can look unusual at first:
 
-- **Spacing is fully normalized**: manual spacing/alignment is not preserved.
-- **No grouped `::`/`=>`/etc. alignment**: declarations are canonicalized, but columns are not aligned.
-- **Declarations are canonical**: typed declarations use `::` with stable attribute order.
-- **Relational operators are modernized**: `.EQ.`/`.NE.`/... become `==`/`/=`/... by default.
-- **Keyword forms are standardized**: defaults are lower-case and spaced end forms (`end if`, `end do`).
-- **Wrapping is rule-based**: line breaks are deterministic, not style-tuned per line.
-- **Operator spacing is consistent**: most binary operators are spaced; `%` and `**` stay tight.
+- **Brutal spacing normalization**: manual visual alignment is not preserved.
+- **No grouped alignment**: Sable does not vertically align `::`, `=>`, `=`, etc., across lines.
+- **Canonical declarations**: typed declarations use `::` with stable attribute ordering.
+- **Modern relational operators by default**: `.EQ.`/`.NE.`/... become `==`/`/=`/... .
+- **Standard keyword forms**: defaults are lower-case keywords and spaced end forms (`end if`, `end do`).
+- **Deterministic wrapping**: line breaks follow fixed rules rather than per-line aesthetics.
+- **Tight `%` and `**`**: component access and exponentiation stay unspaced (`a%b`, `x**2`).
 
 Use `--safe` for lower-risk migration first, then full mode for complete normalization.
 
