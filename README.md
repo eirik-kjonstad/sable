@@ -57,7 +57,7 @@ and `.F08` files.
 
 Sable favors deterministic output over hand-tuned layout and aims to minimize re-spacing diffs and yield a unified style. This leads to some intentional choices that can look unusual at first:
 
-- **Brutal spacing normalization**: manual visual alignment is not preserved.
+- **Spacing normalization**: manual visual alignment is not preserved.
 - **No grouped alignment**: Sable does not vertically align `::`, `=>`, `=`, etc., across lines.
 - **Canonical declarations**: typed declarations use `::` with stable attribute ordering.
 - **Modern relational operators by default**: `.EQ.`/`.NE.`/... become `==`/`/=`/... .
