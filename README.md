@@ -57,42 +57,17 @@ and `.F08` files.
 
 ## Formatting decisions (and why)
 
-Sable intentionally optimizes for deterministic output over hand-tuned style.
-Some choices are opinionated by design:
+Sable favors deterministic output over hand-tuned layout to minimize diffs and yield a predictable style.
 
-- **Brutal spacing normalization**: Sable rewrites spacing to one canonical form,
-  even when input spacing is deliberate for visual alignment.
-  - Rationale: removes style drift, avoids bikeshedding, and keeps output fully
-    predictable.
-- **No manual column alignment preservation**: alignment such as vertically lined
-  up `::`, `=>`, or `=` is not preserved.
-  - Rationale: aligned columns create fragile diffs; renaming one symbol can
-    force many unrelated whitespace changes.
-- **No automatic declaration column alignment**: Sable canonicalizes declarations
-  but does not align `::` across grouped lines.
-  - Rationale: deterministic and stable across edits; avoids cascading
-    re-alignment churn.
-- **Canonical declaration structure**: typed declarations are normalized to use
-  `::`, and attributes are emitted in a stable order.
-  - Rationale: one representation per construct improves readability and diff
-    consistency.
-- **Modern relational operators by default**: `.EQ.`/`.NE.`/... become
-  `==`/`/=`/... (unless `--no-normalize-operators` is used).
-  - Rationale: modern syntax is shorter, clearer, and consistent with current
-    Fortran style.
-- **Keyword normalization**: keyword case and end-keyword form are standardized
-  (defaults: lower-case + spaced `end if`/`end do`).
-  - Rationale: consistent lexical style improves scanability across files.
-- **Deterministic wrapping over aesthetic wrapping**: long lines are wrapped by
-  fixed rules (including one-argument-per-line in some cases).
-  - Rationale: reproducible output matters more than local wrapping taste.
-- **Strict operator spacing rules**: most binary operators get spaces, while `%`
-  and `**` stay tight (`a%b`, `x**2`).
-  - Rationale: preserves common Fortran idioms for component access and
-    exponentiation while keeping other expressions readable.
+- **Spacing is fully normalized**: manual spacing/alignment is not preserved.
+- **No grouped `::`/`=>`/etc. alignment**: declarations are canonicalized, but columns are not aligned.
+- **Declarations are canonical**: typed declarations use `::` with stable attribute order.
+- **Relational operators are modernized**: `.EQ.`/`.NE.`/... become `==`/`/=`/... by default.
+- **Keyword forms are standardized**: defaults are lower-case keywords and spaced end forms (`end if`, `end do`).
+- **Wrapping is rule-based**: line breaks are deterministic, not style-tuned per line.
+- **Operator spacing is consistent**: most binary operators are spaced; `%` and `**` stay tight.
 
-If you need lower-risk adoption first, use `--safe` for migration-oriented
-formatting, then switch to full mode later.
+Use `--safe` for lower-risk migration first, then full mode for complete normalization.
 
 ```fortran
 ! Before
