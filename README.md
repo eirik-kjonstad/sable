@@ -86,7 +86,7 @@ end if
 
 ## Formatting rules (quick reference)
 
-| Old | New |
+| Input | Output (default) |
 |-----|-----|
 | `.EQ.` | `==` |
 | `.NE.` | `/=` |
@@ -94,17 +94,17 @@ end if
 | `.LE.` | `<=` |
 | `.GT.` | `>`  |
 | `.GE.` | `>=` |
+| `endif` | `end if` |
+| `integer x` | `integer :: x` |
 
-- Keywords are lower-case by default (`--keyword-case upper` to change).
-- Names are preserved exactly as written.
-- End keywords use spaced forms by default (`end if`, `end do`; configurable).
-- `.AND.`, `.OR.`, `.NOT.`, `.EQV.`, `.NEQV.` are preserved.
-- One space around most binary operators; no spaces around `%` or `**`.
-- No spaces inside parens/brackets.
-- Two spaces before inline comments (`x = 1  ! note`).
-- Default indent is 3 spaces (`--indent-width` to change).
-- Long lines wrap with `&` using deterministic split rules (`--line-length`).
-- Multi-statement lines split into one statement per line.
+- Keywords are lower-case by default (`--keyword-case upper` to change); identifier spelling/case is preserved.
+- End keywords default to spaced forms (`end if`, `end do`; configurable).
+- One space around most binary operators and after commas; `%` and `**` stay tight.
+- No spaces inside `()`/`[]`, except required construct-head spacing (`if (...)`, `select type (...)`).
+- Declarations are canonicalized (`::` inserted and attributes emitted in stable order).
+- Inline comments are separated from code by two spaces (`x = 1  ! note`).
+- Long lines wrap deterministically with `&`; `;`-separated statements are emitted one per line.
+- Preprocessor directives stay at column 0, and output is idempotent with one trailing newline.
 
 ## Configuration
 
