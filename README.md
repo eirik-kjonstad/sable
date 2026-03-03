@@ -75,10 +75,10 @@ ENDIF
 
 ! After
 if (A == B) then
-   call compute(    &
-      alpha_input,  &
-      beta_input,   &
-      gamma_input,  &
+   call compute( &
+      alpha_input, &
+      beta_input, &
+      gamma_input, &
       result_output &
    )
 end if

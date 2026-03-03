@@ -1025,9 +1025,9 @@ class TestArgListExpansion:
         assert "argument_delta" in lines[4] and lines[4].endswith(" &")
         # Closing ) on its own line at original indent
         assert lines[5] == ")"
-        # All & symbols are vertically aligned (same column)
+        # Ampersands are not vertically aligned; avoid padding churn.
         amp_cols = [line.rindex("&") for line in lines[:5]]
-        assert len(set(amp_cols)) == 1
+        assert len(set(amp_cols)) > 1
 
     def test_short_call_stays_single_line(self):
         result = fmt("call foo(a, b, c)\n")

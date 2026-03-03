@@ -1420,24 +1420,16 @@ def _try_expand_arg_list(
             )
             content_lines.extend(split)
 
-    # Align & markers.  Lines that end with a bare "&" are in-string continuation
-    # lines: they must NOT receive an additional statement "&" (invalid Fortran).
-    # Only lines that don't end with "&" participate in alignment.
-    non_raw = [line for line in content_lines if not line.endswith("&")]
-    fitting = [len(line) for line in non_raw if len(line) <= cfg.line_length - 2]
-    align_width = (
-        max(fitting)
-        if fitting
-        else (max(len(line) for line in non_raw) if non_raw else 0)
-    )
+    # Append statement continuation markers.  Lines that end with a bare "&" are
+    # in-string continuation lines: they must NOT receive an additional statement
+    # "&" (invalid Fortran).
     lines: list[str] = []
     for content in content_lines:
         if content.endswith("&"):
             # In-string continuation: emit without adding a statement &
             lines.append(content)
         else:
-            padding = " " * max(0, align_width - len(content))
-            lines.append(content + padding + " &")
+            lines.append(content + " &")
 
     # Closing line(s): start with ')' at original indent, then any suffix tokens
     # (e.g. result(r) or chained expressions). Reuse the normal line renderer so
