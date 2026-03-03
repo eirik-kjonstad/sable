@@ -1900,7 +1900,10 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
                 last_was_end_routine = False
                 continue
             # Comment-only or blank line: buffer until we know the next code indent
-            pending.append(normalised[0].text if normalised else None)
+            if normalised and re.fullmatch(r"!\s*", normalised[0].text):
+                pending.append(None)
+            else:
+                pending.append(normalised[0].text if normalised else None)
             continue
 
         # Code line: emit buffered comments/blanks at this line's indentation level
