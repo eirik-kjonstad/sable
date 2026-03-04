@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -91,9 +92,7 @@ def render_diagnostics_sarif(diagnostics: list[Diagnostic]) -> str:
 
     payload = {
         "version": "2.1.0",
-        "$schema": (
-            "https://json.schemastore.org/sarif-2.1.0-rtm.5.json"
-        ),
+        "$schema": ("https://json.schemastore.org/sarif-2.1.0-rtm.5.json"),
         "runs": [
             {
                 "tool": {"driver": {"name": "sable", "rules": rules}},
@@ -101,4 +100,33 @@ def render_diagnostics_sarif(diagnostics: list[Diagnostic]) -> str:
             }
         ],
     }
+    return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+
+def render_diagnostics_gitlab_codequality(diagnostics: list[Diagnostic]) -> str:
+    """Render diagnostics in GitLab Code Quality (CodeClimate-like) format."""
+
+    def _path(path: Path | None) -> str:
+        return str(path) if path else "<stdin>"
+
+    payload = []
+    for diag in diagnostics:
+        seed = (
+            f"{_path(diag.path)}|{diag.rule_id}|{diag.line}|{diag.col}|"
+            f"{diag.end_line}|{diag.end_col}|{diag.message}"
+        )
+        fingerprint = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+        payload.append(
+            {
+                "description": f"{diag.rule_id}: {diag.message}",
+                "check_name": diag.rule_id,
+                "fingerprint": fingerprint,
+                "severity": "major",
+                "location": {
+                    "path": _path(diag.path),
+                    "lines": {"begin": diag.line, "end": diag.end_line},
+                },
+            }
+        )
+
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"

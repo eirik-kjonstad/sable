@@ -97,7 +97,9 @@ class SBL001RelationalOperatorRule:
                     path=ctx.path,
                     fix=Fix(
                         message=f"Replace {tok.text} with {replacement}",
-                        edits=(TextEdit(start=start, end=end, replacement=replacement),),
+                        edits=(
+                            TextEdit(start=start, end=end, replacement=replacement),
+                        ),
                     ),
                 )
             )
@@ -137,7 +139,9 @@ class SBL002EndKeywordFormRule:
                         path=ctx.path,
                         fix=Fix(
                             message=f"Replace {tok.text} with {replacement}",
-                            edits=(TextEdit(start=start, end=end, replacement=replacement),),
+                            edits=(
+                                TextEdit(start=start, end=end, replacement=replacement),
+                            ),
                         ),
                     )
                 )
@@ -186,7 +190,9 @@ class SBL002EndKeywordFormRule:
                     path=ctx.path,
                     fix=Fix(
                         message=f"Replace {' '.join(matched[0])} with {replacement}",
-                        edits=(TextEdit(start=start, end=end, replacement=replacement),),
+                        edits=(
+                            TextEdit(start=start, end=end, replacement=replacement),
+                        ),
                     ),
                 )
             )
@@ -237,7 +243,9 @@ class SBL003DeclarationDoubleColonRule:
                     path=ctx.path,
                     fix=Fix(
                         message="Insert declaration separator '::'",
-                        edits=(TextEdit(start=start, end=end, replacement=replacement),),
+                        edits=(
+                            TextEdit(start=start, end=end, replacement=replacement),
+                        ),
                     ),
                 )
             )
@@ -277,7 +285,9 @@ class SBL004SemicolonSplitRule:
                     path=ctx.path,
                     fix=Fix(
                         message="Split statement at semicolon",
-                        edits=(TextEdit(start=start, end=end, replacement="\n" + indent),),
+                        edits=(
+                            TextEdit(start=start, end=end, replacement="\n" + indent),
+                        ),
                     ),
                 )
             )
@@ -406,7 +416,9 @@ class SBL009TabIndentationRule:
                     path=ctx.path,
                     fix=Fix(
                         message="Replace tab indentation with spaces",
-                        edits=(TextEdit(start=start, end=end, replacement=replacement),),
+                        edits=(
+                            TextEdit(start=start, end=end, replacement=replacement),
+                        ),
                     ),
                 )
             )
@@ -419,7 +431,9 @@ class SBL010StrayLeadingContinuationRule:
     """Detect continuation lines that start with '&' without a prior continuation."""
 
     rule_id = "SBL010"
-    summary = "Line starts with continuation marker '&' but previous line is not continued."
+    summary = (
+        "Line starts with continuation marker '&' but previous line is not continued."
+    )
 
     def check(self, ctx: RuleContext) -> list[Diagnostic]:
         diagnostics: list[Diagnostic] = []
@@ -474,7 +488,12 @@ class SBL101MissingImplicitNoneRule:
     summary = "Program unit is missing 'implicit none'."
 
     _UNIT_KINDS = {"program", "module", "subroutine", "function"}
-    _END_COMPACT = {"endprogram": "program", "endmodule": "module", "endsubroutine": "subroutine", "endfunction": "function"}
+    _END_COMPACT = {
+        "endprogram": "program",
+        "endmodule": "module",
+        "endsubroutine": "subroutine",
+        "endfunction": "function",
+    }
 
     def _line_keywords(self, line_tokens: list[Token]) -> list[str]:
         return [
@@ -572,7 +591,11 @@ class SBL101MissingImplicitNoneRule:
                     path=ctx.path,
                     fix=Fix(
                         message="Insert implicit none in specification part",
-                        edits=(TextEdit(start=insert_at, end=insert_at, replacement=replacement),),
+                        edits=(
+                            TextEdit(
+                                start=insert_at, end=insert_at, replacement=replacement
+                            ),
+                        ),
                         safety=FixSafety.UNSAFE,
                     ),
                 )

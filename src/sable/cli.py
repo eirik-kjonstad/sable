@@ -13,6 +13,7 @@ from .baseline import diagnostic_key, load_baseline, write_baseline
 from .checker import apply_fixes, check_source
 from .formatter import DEFAULT_CONFIG, FormatConfig, format_source
 from .outputs import (
+    render_diagnostics_gitlab_codequality,
     render_diagnostics_json,
     render_diagnostics_sarif,
     render_diagnostics_text,
@@ -445,6 +446,8 @@ def _run_check(
 
     if output_format == "json":
         click.echo(render_diagnostics_json(diagnostics), nl=False)
+    elif output_format == "gitlab-codequality":
+        click.echo(render_diagnostics_gitlab_codequality(diagnostics), nl=False)
     elif output_format == "sarif":
         click.echo(render_diagnostics_sarif(diagnostics), nl=False)
     elif diagnostics and not stdin_fixed:
@@ -614,7 +617,9 @@ def format_command(
 @click.option(
     "--output-format",
     default=None,
-    type=click.Choice(["text", "json", "sarif"], case_sensitive=False),
+    type=click.Choice(
+        ["text", "json", "sarif", "gitlab-codequality"], case_sensitive=False
+    ),
     help="Diagnostic output format (defaults to pyproject setting or text).",
 )
 @click.option(

@@ -76,4 +76,6 @@ def write_baseline(path: Path, diagnostics: list[Diagnostic]) -> None:
         )
     )
     payload = {"version": 1, "entries": entries}
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )

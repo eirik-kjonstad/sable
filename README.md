@@ -54,6 +54,7 @@ sable check --fix --unsafe-fixes src/
 # Machine-readable output
 sable check --output-format json src/
 sable check --output-format sarif src/
+sable check --output-format gitlab-codequality src/
 
 # Baseline workflow for gradual adoption
 sable check --generate-baseline --baseline .sable-baseline.json src/
@@ -181,7 +182,7 @@ Check options:
 | `--ignore RULE` | none | Ignore selected rule code(s) |
 | `--fix` | off | Apply safe autofixes, then re-check |
 | `--unsafe-fixes` | off | Include unsafe fixes (requires `--fix`) |
-| `--output-format` | `text` | `text`, `json`, or `sarif` |
+| `--output-format` | `text` | `text`, `json`, `sarif`, or `gitlab-codequality` |
 | `--baseline PATH` | none | Filter diagnostics present in baseline |
 | `--generate-baseline` | off | Write current diagnostics to baseline file |
 
@@ -191,7 +192,7 @@ Check options:
 [tool.sable.check]
 select = ["SBL001", "SBL002", "SBL003", "SBL004", "SBL005", "SBL009", "SBL010"]
 ignore = ["SBL101"]
-output_format = "text"   # text | json | sarif
+output_format = "text"   # text | json | sarif | gitlab-codequality
 baseline = ".sable-baseline.json"
 fix = false
 unsafe_fixes = false
@@ -199,6 +200,9 @@ generate_baseline = false
 ```
 
 CLI flags take precedence over `pyproject.toml` defaults.
+
+GitLab integration tip:
+- Use `--output-format gitlab-codequality` and upload that JSON file as a GitLab `codequality` report artifact.
 
 ## License
 

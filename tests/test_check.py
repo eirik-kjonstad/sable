@@ -234,12 +234,17 @@ def test_check_fix_applies_unsafe_with_flag(tmp_path):
     result = runner.invoke(main, ["check", "--fix", "--unsafe-fixes", str(src)])
 
     assert result.exit_code == 0
-    assert src.read_text(encoding="utf-8") == "program p\n   implicit none\nprint *, 1\nend program p\n"
+    assert (
+        src.read_text(encoding="utf-8")
+        == "program p\n   implicit none\nprint *, 1\nend program p\n"
+    )
 
 
 def test_inline_suppression_ignores_rule_on_line(tmp_path):
     src = tmp_path / "example.f90"
-    src.write_text("if (A .EQ. B) then ! sable: ignore SBL001\nend if\n", encoding="utf-8")
+    src.write_text(
+        "if (A .EQ. B) then ! sable: ignore SBL001\nend if\n", encoding="utf-8"
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["check", str(src)])
@@ -250,7 +255,9 @@ def test_inline_suppression_ignores_rule_on_line(tmp_path):
 
 def test_file_suppression_ignores_rule(tmp_path):
     src = tmp_path / "example.f90"
-    src.write_text("! sable: ignore-file SBL001\nif (A .EQ. B) then\nend if\n", encoding="utf-8")
+    src.write_text(
+        "! sable: ignore-file SBL001\nif (A .EQ. B) then\nend if\n", encoding="utf-8"
+    )
 
     runner = CliRunner()
     result = runner.invoke(main, ["check", str(src)])
@@ -294,6 +301,25 @@ def test_sarif_output(tmp_path):
     assert payload["version"] == "2.1.0"
     assert payload["runs"][0]["tool"]["driver"]["name"] == "sable"
     assert payload["runs"][0]["results"][0]["ruleId"] == "SBL001"
+
+
+def test_gitlab_codequality_output(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text("if (A .EQ. B) then\nend if\n", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--output-format", "gitlab-codequality", str(src)]
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert isinstance(payload, list)
+    assert payload[0]["check_name"] == "SBL001"
+    assert payload[0]["severity"] == "major"
+    assert payload[0]["location"]["path"].endswith("example.f90")
+    assert payload[0]["location"]["lines"]["begin"] == 1
+    assert payload[0]["fingerprint"]
 
 
 def test_check_uses_pyproject_select_default(tmp_path, monkeypatch):
