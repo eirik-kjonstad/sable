@@ -2,7 +2,14 @@
   <img src="https://raw.githubusercontent.com/eirik-kjonstad/sable/v0.1.3/assets/sable-logo.svg" alt="Sable logo" width="420">
 </p>
 
-An uncompromising Fortran formatter and checker, inspired by Black and Ruff-style workflows.
+An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/black).
+
+> "So it goes."
+> — Kurt Vonnegut, *Slaughterhouse-Five*
+
+Sable enforces one consistent style for modern free-form Fortran, so you can
+focus on code instead of formatting. It also supports code checks beyond formatting
+to identify code issues.
 
 ## Installation
 
@@ -10,65 +17,88 @@ An uncompromising Fortran formatter and checker, inspired by Black and Ruff-styl
 pip install sable-fortran
 ```
 
-## Format vs Check
-
-Sable has two responsibilities:
-
-- `sable format` (or just `sable`) rewrites files to Sable's canonical style.
-  This includes syntax/style normalization like `.EQ.` -> `==`, `endif` -> `end if`, declaration normalization, wrapping, and whitespace.
-- `sable check` reports rule diagnostics and can apply rule fixes with `--fix`.
-  Use `--rule-set` to choose `style`, `lint`, or `all` (default).
-
-## Quick Usage
+## Quick Start
 
 ```bash
-# Format in place
+# Format in place (default command)
 sable src/
+
+# Equivalent explicit form
+sable format src/
 
 # Check formatting only (no writes)
 sable format --check src/
 
-# Show formatting diff
+# Preview formatting diff
 sable format --diff src/
 
 # Safer migration pass (layout-focused)
 sable format --safe src/
+```
 
-# Run all check rules (style + lint)
+Recommended CI formatting gate:
+
+```bash
+sable format --check src/
+```
+
+## Formatting 
+
+`format` rewrites source into Sable's canonical style. This includes:
+
+- Relational operator normalization (`.EQ.` -> `==`, etc.)
+- END keyword normalization (`endif` -> `end if`, configurable)
+- Declaration normalization (`integer x` -> `integer :: x`)
+- Deterministic spacing, indentation, wrapping, and trailing newline handling
+
+Example:
+
+```fortran
+! Before
+IF(A .EQ. B)THEN
+CALL compute(alpha,beta,gamma)
+ENDIF
+
+! After
+if (A == B) then
+   call compute( &
+      alpha, &
+      beta, &
+      gamma &
+   )
+end if
+```
+
+## Checking
+
+`check` reports rule diagnostics and can apply rule fixes.
+
+```bash
+# Run all rules (style + lint)
 sable check src/
 
-# Run only lint rules
+# Focus on policy/lint only
 sable check --rule-set lint src/
 
-# Run only style rules
+# Formatter-adjacent style rules only
 sable check --rule-set style src/
 
 # Apply safe fixes, then re-check
 sable check --fix src/
 
-# Include unsafe fixes too
+# Allow unsafe fixes too
 sable check --fix --unsafe-fixes src/
 ```
 
-Recommended CI split:
+Rule-set notes:
 
-```bash
-sable format --check src/
-sable check --rule-set lint src/
-```
-
-## Rule Sets
-
-`--rule-set all` (default):
-- Style: `SBL001`, `SBL002`, `SBL003`, `SBL004`, `SBL005`, `SBL009`, `SBL010`
-- Lint: `SBL101`, `SBL102`, `SBL103`
-
-Rule notes:
-- `--select` takes precedence over `--rule-set`.
-- `--fix` applies safe fixes.
-- `--unsafe-fixes` enables unsafe fixes (only with `--fix`).
+- `--rule-set all` (default): style + lint
+- `--select` takes precedence over `--rule-set`
+- `--fix` applies safe fixes
+- `--unsafe-fixes` enables unsafe fixes (only with `--fix`)
 
 Current lint rules:
+
 - `SBL101`: Program/module is missing `implicit none`
 - `SBL102`: Procedure is missing `implicit none`
 - `SBL103`: Dummy argument is missing `intent(in|out|inout)`
