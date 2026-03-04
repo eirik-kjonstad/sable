@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 
 import click
-import tomli
+
+try:  # Python 3.11+
+    import tomllib as toml
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as toml
 
 from . import __version__
 from .baseline import diagnostic_key, load_baseline, write_baseline
@@ -161,7 +165,7 @@ def _load_check_defaults(cwd: Path) -> dict[str, object]:
         return {}
 
     try:
-        data = tomli.loads(pyproject.read_text(encoding="utf-8"))
+        data = toml.loads(pyproject.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return {}
 
