@@ -22,6 +22,7 @@ from .outputs import (
     render_diagnostics_sarif,
     render_diagnostics_text,
 )
+from .rules import get_rule_summaries
 
 # ── Output helpers ────────────────────────────────────────────────────────────
 
@@ -372,6 +373,7 @@ def _run_check(
     stdin_filename: str | None,
     select: tuple[str, ...],
     ignore: tuple[str, ...],
+    rule_set: str,
     output_format: str,
     cfg: FormatConfig,
     fix: bool,
@@ -381,6 +383,7 @@ def _run_check(
 ) -> int:
     sources, read_errors = _read_sources(files, stdin_filename)
     diagnostics = []
+    source_lookup: dict[str, str] = {}
     n_errors = 0
     stdin_fixed = False
     baseline_path = Path(baseline) if baseline else Path(".sable-baseline.json")
@@ -412,6 +415,7 @@ def _run_check(
                 path=path,
                 select=set(select) if select else None,
                 ignore=set(ignore) if ignore else None,
+                rule_set=rule_set,
             )
             if fix:
                 fixed, _n_applied = apply_fixes(
@@ -430,8 +434,10 @@ def _run_check(
                     path=path,
                     select=set(select) if select else None,
                     ignore=set(ignore) if ignore else None,
+                    rule_set=rule_set,
                 )
             diagnostics.extend(file_diagnostics)
+            source_lookup[label] = source
         except Exception as exc:  # noqa: BLE001
             click.echo(f"{SYM_ERR} {_fmt_label(label)}: {exc}", err=True)
             n_errors += 1
@@ -453,7 +459,14 @@ def _run_check(
     elif output_format == "gitlab-codequality":
         click.echo(render_diagnostics_gitlab_codequality(diagnostics), nl=False)
     elif output_format == "sarif":
-        click.echo(render_diagnostics_sarif(diagnostics), nl=False)
+        click.echo(
+            render_diagnostics_sarif(
+                diagnostics,
+                source_lookup=source_lookup,
+                rule_summaries=get_rule_summaries(),
+            ),
+            nl=False,
+        )
     elif diagnostics and not stdin_fixed:
         click.echo(render_diagnostics_text(diagnostics), nl=False)
     elif diagnostics and stdin_fixed:
@@ -619,6 +632,15 @@ def format_command(
     help="Ignore the specified rule code(s). Repeat for multiple rules.",
 )
 @click.option(
+    "--rule-set",
+    default=None,
+    type=click.Choice(["lint", "style", "all"], case_sensitive=False),
+    help=(
+        "Choose the rule category to run: lint (policy), style "
+        "(formatter-adjacent), or all."
+    ),
+)
+@click.option(
     "--output-format",
     default=None,
     type=click.Choice(
@@ -693,6 +715,7 @@ def check_command(
     files: tuple[Path, ...],
     select: tuple[str, ...],
     ignore: tuple[str, ...],
+    rule_set: str | None,
     output_format: str | None,
     fix: bool | None,
     unsafe_fixes: bool | None,
@@ -709,6 +732,10 @@ def check_command(
     defaults = _load_check_defaults(Path.cwd())
     resolved_select = _resolve_tuple_option(select, defaults.get("select"))
     resolved_ignore = _resolve_tuple_option(ignore, defaults.get("ignore"))
+    resolved_rule_set = _resolve_str_option(rule_set, defaults.get("rule_set"), "all")
+    resolved_rule_set = resolved_rule_set.lower()
+    if resolved_rule_set not in {"lint", "style", "all"}:
+        resolved_rule_set = "all"
     resolved_output_format = _resolve_str_option(
         output_format, defaults.get("output_format"), "text"
     ).lower()
@@ -735,6 +762,7 @@ def check_command(
         stdin_filename=stdin_filename,
         select=resolved_select,
         ignore=resolved_ignore,
+        rule_set=resolved_rule_set,
         output_format=resolved_output_format,
         cfg=cfg,
         fix=resolved_fix,

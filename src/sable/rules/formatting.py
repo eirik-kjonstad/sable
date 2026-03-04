@@ -66,6 +66,39 @@ def _keyword_case(text: str, case: str) -> str:
     return text.upper() if case == "upper" else text.lower()
 
 
+def _strip_fortran_comment(
+    line: str, in_single: bool = False, in_double: bool = False
+) -> tuple[str, bool, bool]:
+    """Strip trailing comment text, ignoring ! inside quoted strings.
+
+    Returns (stripped_line, in_single, in_double) where the boolean states
+    represent quote context at end-of-line.
+    """
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "'" and not in_double:
+            # Escaped single quote in Fortran strings: ''
+            if in_single and i + 1 < len(line) and line[i + 1] == "'":
+                i += 2
+                continue
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            # Escaped double quote in Fortran strings: ""
+            if in_double and i + 1 < len(line) and line[i + 1] == '"':
+                i += 2
+                continue
+            in_double = not in_double
+            i += 1
+            continue
+        if ch == "!" and not in_single and not in_double:
+            return line[:i], in_single, in_double
+        i += 1
+    return line, in_single, in_double
+
+
 class SBL001RelationalOperatorRule:
     """Replace old-style relational operators (.EQ., .NE., ...) with modern ones."""
 
@@ -440,6 +473,8 @@ class SBL010StrayLeadingContinuationRule:
         lines = ctx.source.splitlines(keepends=True)
         prev_continues = False
         offset = 0
+        in_single = False
+        in_double = False
 
         for line_no, line in enumerate(lines, start=1):
             line_body = line[:-1] if line.endswith("\n") else line
@@ -474,7 +509,10 @@ class SBL010StrayLeadingContinuationRule:
                     )
                 )
 
-            code_no_comment = line_body.split("!", 1)[0].rstrip()
+            code_text, in_single, in_double = _strip_fortran_comment(
+                line_body, in_single=in_single, in_double=in_double
+            )
+            code_no_comment = code_text.rstrip()
             prev_continues = code_no_comment.endswith("&")
             offset += len(line)
 
@@ -482,17 +520,15 @@ class SBL010StrayLeadingContinuationRule:
 
 
 class SBL101MissingImplicitNoneRule:
-    """Detect program units that do not contain `implicit none`."""
+    """Detect program/module units that do not contain `implicit none`."""
 
     rule_id = "SBL101"
-    summary = "Program unit is missing 'implicit none'."
+    summary = "Program/module unit is missing 'implicit none'."
 
-    _UNIT_KINDS = {"program", "module", "subroutine", "function"}
+    _UNIT_KINDS = {"program", "module"}
     _END_COMPACT = {
         "endprogram": "program",
         "endmodule": "module",
-        "endsubroutine": "subroutine",
-        "endfunction": "function",
     }
 
     def _line_keywords(self, line_tokens: list[Token]) -> list[str]:
@@ -508,6 +544,132 @@ class SBL101MissingImplicitNoneRule:
         if words[0] == "end":
             return None
         if words[0] == "module" and len(words) > 1 and words[1] == "procedure":
+            return None
+        for word in words:
+            if word in self._UNIT_KINDS:
+                return word
+        return None
+
+    def _find_closer(self, words: list[str]) -> str | None:
+        if not words:
+            return None
+        if words[0] == "end":
+            if len(words) > 1 and words[1] in self._UNIT_KINDS:
+                return words[1]
+            return None
+        return self._END_COMPACT.get(words[0])
+
+    def _has_implicit_none(self, words: list[str]) -> bool:
+        for i in range(len(words) - 1):
+            if words[i] == "implicit" and words[i + 1] == "none":
+                return True
+        return False
+
+    def check(self, ctx: RuleContext) -> list[Diagnostic]:
+        diagnostics: list[Diagnostic] = []
+        lines = ctx.source.splitlines(keepends=True)
+        stack: list[dict[str, object]] = []
+
+        for logical_line in ctx.logical_lines:
+            non_comment = [tok for tok in logical_line if tok.kind != TokenKind.COMMENT]
+            if not non_comment:
+                continue
+            keywords = self._line_keywords(non_comment)
+            if not keywords:
+                continue
+            line_no = non_comment[0].line
+
+            if stack and "contains" in keywords:
+                stack[-1]["seen_contains"] = True
+            if (
+                stack
+                and self._has_implicit_none(keywords)
+                and not bool(stack[-1].get("seen_contains", False))
+            ):
+                stack[-1]["has_implicit"] = True
+
+            opener = self._find_opener(keywords)
+            if opener is not None:
+                line_text = lines[line_no - 1].rstrip("\n")
+                leading = re.match(r"[ \t]*", line_text).group(0)
+                stack.append(
+                    {
+                        "kind": opener,
+                        "line": line_no,
+                        "indent": leading + (" " * ctx.cfg.indent_width),
+                        "has_implicit": False,
+                        "seen_contains": False,
+                    }
+                )
+                continue
+
+            closer = self._find_closer(keywords)
+            if closer is None or not stack:
+                continue
+            if stack[-1]["kind"] != closer:
+                continue
+
+            frame = stack.pop()
+            if frame["has_implicit"]:
+                continue
+
+            start_line = int(frame["line"])
+            if start_line < len(ctx.line_starts):
+                insert_at = ctx.line_starts[start_line]
+                prefix = ""
+            else:
+                insert_at = len(ctx.source)
+                prefix = "\n" if not ctx.source.endswith("\n") else ""
+            statement = _keyword_case("implicit none", ctx.cfg.keyword_case)
+            replacement = f"{prefix}{frame['indent']}{statement}\n"
+            diagnostics.append(
+                Diagnostic(
+                    rule_id=self.rule_id,
+                    message=self.summary,
+                    line=start_line,
+                    col=1,
+                    end_line=start_line,
+                    end_col=1,
+                    severity=Severity.WARNING,
+                    path=ctx.path,
+                    fix=Fix(
+                        message="Insert implicit none in specification part",
+                        edits=(
+                            TextEdit(
+                                start=insert_at, end=insert_at, replacement=replacement
+                            ),
+                        ),
+                        safety=FixSafety.UNSAFE,
+                    ),
+                )
+            )
+
+        return diagnostics
+
+
+class SBL102MissingImplicitNoneProcedureRule:
+    """Detect procedure units that do not contain `implicit none`."""
+
+    rule_id = "SBL102"
+    summary = "Procedure is missing 'implicit none'."
+
+    _UNIT_KINDS = {"subroutine", "function"}
+    _END_COMPACT = {
+        "endsubroutine": "subroutine",
+        "endfunction": "function",
+    }
+
+    def _line_keywords(self, line_tokens: list[Token]) -> list[str]:
+        return [
+            tok.text.lower()
+            for tok in line_tokens
+            if tok.kind == TokenKind.KEYWORD and tok.text
+        ]
+
+    def _find_opener(self, words: list[str]) -> str | None:
+        if not words:
+            return None
+        if words[0] == "end":
             return None
         for word in words:
             if word in self._UNIT_KINDS:
@@ -600,5 +762,176 @@ class SBL101MissingImplicitNoneRule:
                     ),
                 )
             )
+
+        return diagnostics
+
+
+class SBL103MissingIntentOnDummyArgsRule:
+    """Detect dummy procedure arguments that are missing INTENT attributes."""
+
+    rule_id = "SBL103"
+    summary = "Dummy argument is missing INTENT(in|out|inout)."
+
+    _UNIT_KINDS = {"subroutine", "function"}
+    _END_COMPACT = {
+        "endsubroutine": "subroutine",
+        "endfunction": "function",
+    }
+
+    def _line_keywords(self, line_tokens: list[Token]) -> list[str]:
+        return [
+            tok.text.lower()
+            for tok in line_tokens
+            if tok.kind == TokenKind.KEYWORD and tok.text
+        ]
+
+    def _find_opener(self, words: list[str]) -> str | None:
+        if not words:
+            return None
+        if words[0] == "end":
+            return None
+        if words[0] == "module" and len(words) > 1 and words[1] == "procedure":
+            return None
+        for word in words:
+            if word in self._UNIT_KINDS:
+                return word
+        return None
+
+    def _find_closer(self, words: list[str]) -> str | None:
+        if not words:
+            return None
+        if words[0] == "end":
+            if len(words) > 1 and words[1] in self._UNIT_KINDS:
+                return words[1]
+            return None
+        return self._END_COMPACT.get(words[0])
+
+    def _extract_dummy_args(
+        self, tokens: list[Token]
+    ) -> tuple[list[str], dict[str, Token]]:
+        start_idx = -1
+        for i, tok in enumerate(tokens):
+            if tok.kind == TokenKind.KEYWORD and tok.text.lower() in self._UNIT_KINDS:
+                start_idx = i
+                break
+        if start_idx < 0:
+            return [], {}
+
+        lparen = None
+        for i in range(start_idx, len(tokens)):
+            if tokens[i].kind == TokenKind.LPAREN:
+                lparen = i
+                break
+        if lparen is None:
+            return [], {}
+
+        depth = 0
+        rparen = None
+        for i in range(lparen, len(tokens)):
+            if tokens[i].kind == TokenKind.LPAREN:
+                depth += 1
+            elif tokens[i].kind == TokenKind.RPAREN:
+                depth -= 1
+                if depth == 0:
+                    rparen = i
+                    break
+        if rparen is None:
+            return [], {}
+
+        names: list[str] = []
+        tokens_by_name: dict[str, Token] = {}
+        for tok in tokens[lparen + 1 : rparen]:
+            if tok.kind != TokenKind.NAME:
+                continue
+            key = tok.text.lower()
+            if key not in tokens_by_name:
+                names.append(key)
+                tokens_by_name[key] = tok
+        return names, tokens_by_name
+
+    def check(self, ctx: RuleContext) -> list[Diagnostic]:
+        diagnostics: list[Diagnostic] = []
+        stack: list[dict[str, object]] = []
+
+        for logical_line in ctx.logical_lines:
+            non_comment = [tok for tok in logical_line if tok.kind != TokenKind.COMMENT]
+            if not non_comment:
+                continue
+
+            words = self._line_keywords(non_comment)
+            if not words:
+                continue
+
+            opener = self._find_opener(words)
+            if opener is not None:
+                args, arg_tokens = self._extract_dummy_args(non_comment)
+                stack.append(
+                    {
+                        "kind": opener,
+                        "args": set(args),
+                        "arg_tokens": arg_tokens,
+                        "intent_args": set(),
+                        "decl_tokens": {},
+                    }
+                )
+                continue
+
+            if stack:
+                if not any(tok.kind == TokenKind.CONTINUATION for tok in non_comment):
+                    decl = _parse_declaration(non_comment)
+                    if decl is not None:
+                        frame = stack[-1]
+                        args = frame["args"]
+                        prefix = decl.prefix_tokens
+                        has_intent = any(
+                            tok.kind == TokenKind.KEYWORD
+                            and tok.text.lower() == "intent"
+                            for tok in prefix
+                        )
+
+                        declared: dict[str, Token] = {}
+                        for entity in decl.entities:
+                            if entity and entity[0].kind == TokenKind.NAME:
+                                name = entity[0].text.lower()
+                                if name in args:
+                                    declared[name] = entity[0]
+
+                        if has_intent:
+                            frame["intent_args"].update(declared.keys())
+                        else:
+                            decl_tokens: dict[str, Token] = frame["decl_tokens"]
+                            for name, tok in declared.items():
+                                decl_tokens.setdefault(name, tok)
+
+            closer = self._find_closer(words)
+            if closer is None or not stack:
+                continue
+            if stack[-1]["kind"] != closer:
+                continue
+
+            frame = stack.pop()
+            missing = sorted(frame["args"] - frame["intent_args"])
+            decl_tokens = frame["decl_tokens"]
+            arg_tokens = frame["arg_tokens"]
+
+            for name in missing:
+                tok = decl_tokens.get(name) or arg_tokens.get(name)
+                if tok is None:
+                    continue
+                diagnostics.append(
+                    Diagnostic(
+                        rule_id=self.rule_id,
+                        message=(
+                            f"Dummy argument '{name}' is missing "
+                            "INTENT(in|out|inout)."
+                        ),
+                        line=tok.line,
+                        col=tok.col,
+                        end_line=tok.line,
+                        end_col=tok.col + len(tok.text),
+                        severity=Severity.WARNING,
+                        path=ctx.path,
+                    )
+                )
 
         return diagnostics

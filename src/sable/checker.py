@@ -59,6 +59,7 @@ def check_source(
     *,
     select: set[str] | None = None,
     ignore: set[str] | None = None,
+    rule_set: str = "all",
 ) -> list[Diagnostic]:
     """Run enabled checks on *source* and return diagnostics."""
     tokens = tokenize(source)
@@ -80,7 +81,7 @@ def check_source(
     ignored = _normalise_rule_ids(ignore)
     file_ignores, line_ignores = _parse_suppressions(source)
     diagnostics: list[Diagnostic] = []
-    for rule in get_rules(select=selected, ignore=ignored):
+    for rule in get_rules(select=selected, ignore=ignored, rule_set=rule_set):
         diagnostics.extend(rule.check(ctx))
 
     diagnostics = [
