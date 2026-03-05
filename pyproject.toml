@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sable-fortran"
-version = "0.1.7"
+version = "0.2.0"
 description = "An uncompromising Fortran formatter, inspired by Black"
 readme = "README.md"
 requires-python = ">=3.10"
