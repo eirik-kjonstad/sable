@@ -62,10 +62,10 @@ ENDIF
 ! After
 if (A == B) then
    call compute( &
-      alpha, &
-      beta, &
-      gamma &
-   )
+           alpha, &
+           beta, &
+           gamma &
+        )
 end if
 ```
 

@@ -175,6 +175,28 @@ class TestDeclarationCanonicalization:
             "   delta_variable",
         ]
 
+    def test_long_trailing_comment_is_hoisted_above_declaration(self):
+        src = (
+            "integer, dimension(:, :), allocatable :: basis_shell_info  "
+            "! Info on shells containing elements of the basis\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert lines[0] == "! Info on shells containing elements of the basis"
+        assert lines[1] == "integer, dimension(:, :), allocatable :: basis_shell_info"
+
+    def test_multiline_declaration_with_comment_does_not_break_structure(self):
+        src = (
+            "integer, dimension( &\n"
+            "   :, &\n"
+            "   : &\n"
+            "), allocatable :: basis_shell_info  "
+            "! Info on shells containing elements of the basis\n"
+        )
+        result = fmt(src, line_length=88)
+        assert "dimension(:, : &" not in result
+        assert "), allocatable :: basis_shell_info" in result
+
 
 class TestPercentSplitting:
     """Lines must never be broken adjacent to a % (component access) operator."""
@@ -860,6 +882,24 @@ class TestSingleLineIf:
         result = fmt("if (a .and. (b .or. c)) x = 1", line_length=25)
         assert result.splitlines()[0] == "if (a .and. (b .or. c)) &"
 
+    def test_wrapped_elseif_condition_uses_hanging_indent(self):
+        src = (
+            "if (a) then\n"
+            "   x = 1\n"
+            "elseif (current_molecule /= previous_molecule .and. "
+            "current_molecule /= previous_molecule + 1) then\n"
+            "   x = 2\n"
+            "end if\n"
+        )
+        result = fmt(src, line_length=70)
+        lines = result.splitlines()
+        first = next(line for line in lines if line.lstrip().startswith("elseif ("))
+        second = lines[lines.index(first) + 1]
+        condition_col = first.index("current_molecule")
+        assert first.endswith(" &")
+        assert (len(second) - len(second.lstrip())) == condition_col
+        assert second.lstrip().startswith("current_molecule")
+
     def test_blank_line_after_action_preserved(self):
         # Blank line after the action must survive regardless of whether the if
         # was already written in split form or as a single line.
@@ -881,10 +921,10 @@ class TestSingleLineIf:
         result = fmt(src, line_length=80)
         lines = result.splitlines()
         converged_idx = next(
-            i for i, line in enumerate(lines) if "converged = .TRUE." in line
+            i for i, line in enumerate(lines) if "converged = .true." in line
         )
         assert lines[converged_idx - 1].endswith(" &")
-        assert lines[converged_idx].strip() == "converged = .TRUE."
+        assert lines[converged_idx].strip() == "converged = .true."
         assert lines[converged_idx].startswith("   ")
 
 
@@ -1015,19 +1055,40 @@ class TestArgListExpansion:
         )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
+        callee_col = lines[0].index("some_subroutine")
+        arg_indent = callee_col + 3
         # Opening line ends with &
         assert lines[0].startswith("call some_subroutine(") and lines[0].endswith(" &")
         # Each argument on its own line with , and &
+        assert (len(lines[1]) - len(lines[1].lstrip())) == arg_indent
         assert "argument_alpha," in lines[1] and lines[1].endswith(" &")
         assert "argument_beta," in lines[2] and lines[2].endswith(" &")
         assert "argument_gamma," in lines[3] and lines[3].endswith(" &")
         # Last argument has no comma, still has &
         assert "argument_delta" in lines[4] and lines[4].endswith(" &")
-        # Closing ) on its own line at original indent
-        assert lines[5] == ")"
+        # Closing ) on its own line aligned to callee start.
+        assert lines[5] == (" " * callee_col) + ")"
         # Ampersands are not vertically aligned; avoid padding churn.
         amp_cols = [line.rindex("&") for line in lines[:5]]
         assert len(set(amp_cols)) > 1
+
+    def test_assignment_call_explodes_with_hanging_indent(self):
+        src = (
+            "descriptor = state_descriptor("
+            "trim(left_or_right_string(left_or_right)), "
+            "types(i), "
+            "spin_symmetry = trim(spin_string(spin)))\n"
+        )
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        callee_col = lines[0].index("state_descriptor")
+        arg_indent = callee_col + 3
+        assert lines[0].startswith("descriptor = state_descriptor(")
+        assert lines[0].endswith(" &")
+        assert all(
+            (len(line) - len(line.lstrip())) == arg_indent for line in lines[1:4]
+        )
+        assert lines[4] == (" " * callee_col) + ")"
 
     def test_short_call_stays_single_line(self):
         result = fmt("call foo(a, b, c)\n")
@@ -1071,16 +1132,18 @@ class TestArgListExpansion:
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert lines[0].startswith("function compute(") and lines[0].endswith(" &")
-        # Closing ) with result clause at original indent, on its own line
-        close_line = next(line for line in lines if line.startswith(") result"))
-        assert close_line == ") result(out)"
+        # Closing ) with result clause aligned to the procedure name.
+        close_line = next(
+            line for line in lines if line.lstrip().startswith(") result")
+        )
+        assert close_line == (" " * lines[0].index("compute")) + ") result(out)"
 
     def test_trailing_comment_on_close_line(self):
         src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
         result = fmt(src, line_length=40)
         lines = result.splitlines()
         # Comment goes on the closing ) line
-        assert lines[-1].startswith(")") and "! important" in lines[-1]
+        assert lines[-1].lstrip().startswith(")") and "! important" in lines[-1]
 
     def test_close_suffix_respects_line_length(self):
         src = (
@@ -1100,6 +1163,10 @@ class TestArgListExpansion:
         assert lines[0].endswith(" &")
         assert any("this%is_keyword_present(" in line for line in lines[1:])
         assert not any(line.lstrip().startswith(".or.") for line in lines[1:])
+        rhs_col = lines[0].index("this%is_keyword_present")
+        rhs_lines = [line for line in lines[1:] if "this%is_keyword_present(" in line]
+        assert rhs_lines
+        assert all((len(line) - len(line.lstrip())) == rhs_col for line in rhs_lines)
 
     def test_expanded_is_idempotent(self):
         src = (
@@ -1119,7 +1186,7 @@ class TestArgListExpansion:
         assert any(line.lstrip().startswith("alpha,") for line in lines)
         assert any(line.lstrip().startswith("beta,") for line in lines)
         assert any(line.lstrip().startswith("gamma") for line in lines)
-        assert lines[-1] == ")"
+        assert lines[-1] == (" " * lines[0].index("foo")) + ")"
 
     def test_assignment_lhs_index_list_is_not_exploded(self):
         src = (
@@ -1137,6 +1204,38 @@ class TestArgListExpansion:
             line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
             for line in lines[1:-1]
         )
+
+    def test_rhs_call_explodes_when_lhs_has_subscript_parens(self):
+        src = (
+            "this%references(1) = citation("
+            "implementation = 'eT', journal = 'J. Chem. Phys.', "
+            "title_ = 'eT 1.0: An open source electronic structure program with "
+            "emphasis on coupled cluster and multilevel methods', "
+            "year = '2020')\n"
+        )
+        result = fmt(src, line_length=90)
+        lines = result.splitlines()
+        assert "this%references( &" not in result
+        assert lines[0].startswith("this%references(1) = citation(")
+        assert lines[0].endswith(" &")
+        assert any(line.lstrip().startswith("implementation =") for line in lines)
+        assert any(line.lstrip().startswith("journal =") for line in lines)
+        assert any(line.lstrip().startswith("title_ =") for line in lines)
+        assert any(line.lstrip().startswith("year =") for line in lines)
+        callee_col = lines[0].index("citation")
+        assert lines[-1] == (" " * callee_col) + ")"
+
+    def test_rhs_call_explosion_with_lhs_subscript_is_idempotent(self):
+        src = (
+            "this%references(1) = citation("
+            "implementation = 'eT', journal = 'J. Chem. Phys.', "
+            "title_ = 'eT 1.0: An open source electronic structure program with "
+            "emphasis on coupled cluster and multilevel methods', "
+            "year = '2020')\n"
+        )
+        once = fmt(src, line_length=90)
+        twice = fmt(once, line_length=90)
+        assert once == twice
 
     def test_sticky_exploded_lhs_index_list_can_collapse(self):
         src = (
@@ -1185,6 +1284,29 @@ class TestArgListExpansion:
         assert not any("get_l2_norm( &" in line for line in lines)
         assert lines[0].rstrip().endswith(") &")
         assert any(line.lstrip().startswith("/ get_l2_norm(") for line in lines[1:])
+
+    def test_splits_assignment_before_rhs_explosion_when_prefix_is_too_long(self):
+        src = (
+            "g_wxyz(sig_shp_to_first_sig_aop(AB_shp) + wx_packed - 1, aop + "
+            "n_qual_aop_in_prev_shps(CD_shp)) = g_ABCD_p("
+            "w, x, y - C_range%first + 1, z - D_range%first + 1)\n"
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        assert all(len(line) <= 100 for line in lines)
+        assert lines[0].rstrip().endswith("= &")
+        assert lines[1].lstrip().startswith("g_ABCD_p(")
+
+    def test_rhs_explosion_fallback_does_not_emit_overlong_lines(self):
+        src = (
+            "g_wxyz(sig_shp_to_first_sig_aop(AB_shp) + wx_packed - 1, aop + "
+            "n_qual_aop_in_prev_shps(CD_shp)) = g_ABCD_p("
+            "w, x, y - C_range%first + 1, z - D_range%first + 1)\n"
+        )
+        result = fmt(src, line_length=90)
+        lines = result.splitlines()
+        assert all(len(line) <= 90 for line in lines)
+        assert any("g_ABCD_p(" in line for line in lines)
 
 
 class TestStringHandling:
@@ -1405,7 +1527,7 @@ class TestStringSplittingInArgList:
         assert b_line.endswith(" &")
         assert c_line.endswith(" &")
 
-    def test_long_string_single_arg_closing_paren_uses_base_indent(self):
+    def test_long_string_single_arg_closing_paren_uses_callee_indent(self):
         src = (
             "call output%error_msg( &\n"
             "   'Failed to read wavefunction from input.  Did you forget to specify "
@@ -1417,9 +1539,45 @@ class TestStringSplittingInArgList:
         lines = result.splitlines()
         close_line = next(line for line in lines if line.strip() == ")")
         call_line = next(line for line in lines if "call output%error_msg(" in line)
-        assert len(close_line) - len(close_line.lstrip()) == len(call_line) - len(
-            call_line.lstrip()
+        callee_col = call_line.index("output%error_msg")
+        assert len(close_line) - len(close_line.lstrip()) == callee_col
+
+    def test_long_string_single_arg_uses_hanging_indent(self):
+        src = (
+            "call output%warning_msg( &\n"
+            "   'Remove core excitations and frozen orbitals are requested. "
+            "Make sure the remaining&\n"
+            "   & core orbitals have the correct character.' &\n"
+            ")\n"
         )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        call_line = lines[0]
+        callee_col = call_line.index("output%warning_msg")
+        arg_indent = callee_col + 3
+        arg_line = next(line for line in lines if "Remove core excitations" in line)
+        close_line = next(line for line in lines if line.strip() == ")")
+        assert (len(arg_line) - len(arg_line.lstrip())) == arg_indent
+        assert (len(close_line) - len(close_line.lstrip())) == callee_col
+
+    def test_long_keyword_string_arg_respects_line_length(self):
+        src = (
+            "this%references(2) = citation("
+            "implementation = 'Multimodel Newton algorithm', "
+            "journal = 'J. Chem. Phys.', "
+            "title_ = 'Accelerated multimodel Newton-type algorithms for faster "
+            "convergence of ground and excited state coupled cluster equations', "
+            "volume = '153', issue = '1', pages = '014104', year = '2020', "
+            "doi = '10.1063/5.0010989', "
+            "authors = [character(len = 25) :: 'Eirik F. Kjønstad', "
+            "'Sarai D. Folkestad', 'Henrik Koch'])\n"
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+        assert all(len(line) <= 100 for line in lines)
+        assert any("title_ =" in line for line in lines)
+        # In-string continuation introduces a fragment that starts with '&'.
+        assert any(line.lstrip().startswith("&") for line in lines)
 
 
 class TestStringSplitting:
