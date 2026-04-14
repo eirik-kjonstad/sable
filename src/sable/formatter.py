@@ -893,6 +893,104 @@ def _canonicalise_declaration_tokens(tokens: list[Token]) -> list[Token]:
     return canonical
 
 
+def _find_top_level_arrow_index(tokens: list[Token]) -> int | None:
+    """Return index of top-level ``=>`` token, if present."""
+    depth = 0
+    for i, tok in enumerate(tokens):
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+        elif depth == 0 and tok.kind == TokenKind.OP_ARROW:
+            return i
+    return None
+
+
+def _try_split_single_entity_pointer_declaration(
+    body: list[Token],
+    comment: Token | None,
+    indent: str,
+    cfg: FormatConfig,
+    continuation_step: int | None,
+    force_trailing_continuation: bool,
+) -> list[str] | None:
+    """Prefer declaration-aware splits for ``... :: lhs => rhs`` declarations."""
+    core = IndentTracker._core_tokens(body)
+    if not core or len(core) != len(body):
+        return None
+    if core[0].text.lower() != "procedure" or core[0].kind not in (
+        TokenKind.KEYWORD,
+        TokenKind.NAME,
+    ):
+        return None
+
+    colon_idx = next(
+        (i for i, tok in enumerate(core) if tok.kind == TokenKind.DOUBLE_COLON), None
+    )
+    if colon_idx is None or colon_idx == len(core) - 1:
+        return None
+
+    entities = _split_top_level_commas(core[colon_idx + 1 :])
+    if len(entities) != 1:
+        return None
+
+    anchor = core[0]
+    prefix_tokens = core[:colon_idx]
+    entity = entities[0]
+    arrow_idx = _find_top_level_arrow_index(entity)
+    if arrow_idx is None or arrow_idx == 0 or arrow_idx >= len(entity) - 1:
+        return None
+
+    step = cfg.indent_width if continuation_step is None else continuation_step
+    continuation_indent = indent + " " * step
+    comment_str = ("  " + comment.text) if comment else ""
+    arrow_tok = _make_token(TokenKind.OP_ARROW, "=>", anchor)
+    header_tokens = prefix_tokens + [_make_token(TokenKind.DOUBLE_COLON, "::", anchor)]
+    lhs_tokens = entity[:arrow_idx]
+    rhs_tokens = entity[arrow_idx + 1 :]
+
+    def _finalize(lines: list[str]) -> list[str] | None:
+        out = list(lines)
+        if force_trailing_continuation and out:
+            out[-1] = out[-1] + " &"
+        if comment is not None and out:
+            out[-1] = out[-1] + comment_str
+        if all(len(line) <= cfg.line_length for line in out):
+            return out
+        return None
+
+    # Preferred shape:
+    #   procedure, public :: lhs => &
+    #      rhs
+    first = indent + _render_tokens(header_tokens + lhs_tokens + [arrow_tok]) + " &"
+    if len(first) <= cfg.line_length:
+        rhs_lines = render_logical_line(
+            rhs_tokens,
+            continuation_indent,
+            cfg,
+            continuation_step=continuation_step,
+        )
+        rendered = _finalize([first] + rhs_lines)
+        if rendered is not None:
+            return rendered
+
+    # Fallback when header + lhs does not fit:
+    #   procedure, public :: &
+    #      lhs => &
+    #      rhs
+    header_line = indent + _render_tokens(header_tokens) + " &"
+    lhs_line = continuation_indent + _render_tokens(lhs_tokens + [arrow_tok]) + " &"
+    if len(header_line) > cfg.line_length or len(lhs_line) > cfg.line_length:
+        return None
+    rhs_lines = render_logical_line(
+        rhs_tokens,
+        continuation_indent,
+        cfg,
+        continuation_step=continuation_step,
+    )
+    return _finalize([header_line, lhs_line] + rhs_lines)
+
+
 # ---------------------------------------------------------------------------
 # Line rendering
 # ---------------------------------------------------------------------------
@@ -1308,6 +1406,74 @@ def _greedy_split_arg(
     return lines if lines else [first_indent + _render_tokens(arg_toks) + suffix]
 
 
+def _try_expand_array_constructor_arg(
+    arg_toks: list[Token],
+    first_indent: str,
+    cont_indent: str,
+    suffix: str,
+    cfg: FormatConfig,
+) -> list[str] | None:
+    """Try one-element-per-line expansion for a long ``[ ... ]`` constructor arg.
+
+    This is intentionally conservative: only constructor-like brackets at the
+    top level of the argument are expanded, and only when the constructor has
+    multiple top-level comma-separated elements.
+    """
+    depth = 0
+    open_idx: int | None = None
+    close_idx: int | None = None
+
+    for idx, tok in enumerate(arg_toks):
+        if tok.kind == TokenKind.LBRACKET and depth == 0 and open_idx is None:
+            open_idx = idx
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+            if tok.kind == TokenKind.RBRACKET and open_idx is not None and depth == 0:
+                close_idx = idx
+                break
+
+    if open_idx is None or close_idx is None:
+        return None
+
+    # Avoid rewriting likely coarray/image selectors like ``x[1]``.
+    if open_idx > 0 and arg_toks[open_idx - 1].kind not in {
+        TokenKind.OP_ASSIGN,
+        TokenKind.COMMA,
+        TokenKind.LPAREN,
+        TokenKind.LBRACKET,
+    }:
+        return None
+
+    elements = _split_at_top_commas(arg_toks[open_idx + 1 : close_idx])
+    if len(elements) <= 1:
+        return None
+
+    prefix = _render_tokens(arg_toks[: open_idx + 1])
+    postfix = _render_tokens(arg_toks[close_idx:])
+    lines: list[str] = []
+
+    for idx, elem_toks in enumerate(elements):
+        is_last = idx == len(elements) - 1
+        if idx == 0:
+            line = first_indent + prefix + _render_tokens(elem_toks)
+        else:
+            line = cont_indent + _render_tokens(elem_toks)
+
+        if is_last:
+            line = line + postfix + suffix
+        else:
+            line = line + ","
+
+        # + 2 reserves space for the trailing statement continuation `` &``.
+        if len(line) + 2 > cfg.line_length:
+            return None
+        lines.append(line)
+
+    return lines
+
+
 def _render_prefix(tokens: list[Token], start_depth: int) -> list[str]:
     """Render token prefix to spacing-aware string chunks."""
     parts: list[str] = []
@@ -1330,6 +1496,42 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
     """Pick a split boundary using precedence: comma > '=' > low-precedence ops."""
     if not tokens:
         return 0
+
+    def _is_unary_sign(token_idx: int) -> bool:
+        if token_idx < 0 or token_idx >= len(tokens):
+            return False
+        tok = tokens[token_idx]
+        if tok.kind not in (TokenKind.OP_PLUS, TokenKind.OP_MINUS):
+            return False
+        if token_idx == 0:
+            return True
+        prev = tokens[token_idx - 1]
+        return prev.kind in {
+            TokenKind.OP_ASSIGN,
+            TokenKind.OP_PLUS,
+            TokenKind.OP_MINUS,
+            TokenKind.OP_STAR,
+            TokenKind.OP_SLASH,
+            TokenKind.OP_POWER,
+            TokenKind.OP_CONCAT,
+            TokenKind.OP_EQ,
+            TokenKind.OP_NEQ,
+            TokenKind.OP_LT,
+            TokenKind.OP_LE,
+            TokenKind.OP_GT,
+            TokenKind.OP_GE,
+            TokenKind.OP_AND,
+            TokenKind.OP_OR,
+            TokenKind.OP_EQV,
+            TokenKind.OP_NEQV,
+            TokenKind.OP_NOT,
+            TokenKind.OP_ARROW,
+            TokenKind.LPAREN,
+            TokenKind.LBRACKET,
+            TokenKind.COMMA,
+            TokenKind.COLON,
+            TokenKind.DOUBLE_COLON,
+        }
 
     prev: Token | None = None
     prev_prev: Token | None = None
@@ -1383,16 +1585,26 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
 
                 if left.kind == TokenKind.COMMA and same_depth:
                     priorities[0].append(boundary)
-                elif left.kind == TokenKind.OP_ASSIGN and same_depth:
+                elif (
+                    left.kind == TokenKind.OP_ASSIGN
+                    and same_depth
+                    and not (
+                        boundary < len(tokens)
+                        and tokens[boundary].kind
+                        in (TokenKind.OP_PLUS, TokenKind.OP_MINUS)
+                    )
+                ):
                     priorities[1].append(boundary)
                 elif same_depth and left.kind in _LOW_PRECEDENCE_SPLIT_OPS:
-                    priorities[2].append(boundary)
+                    if not _is_unary_sign(boundary - 1):
+                        priorities[2].append(boundary)
                 elif (
                     same_depth
                     and right is not None
                     and right.kind in _LOW_PRECEDENCE_SPLIT_OPS
                 ):
-                    priorities[3].append(boundary)
+                    if not _is_unary_sign(boundary):
+                        priorities[3].append(boundary)
 
             # For a leading designator/function-like prefix `name(...)`, avoid
             # splitting inside that first parenthesised segment when there are
@@ -1590,6 +1802,16 @@ def _try_expand_arg_list(
             else:
                 content_lines.append(single_line)
         else:
+            expanded_array = _try_expand_array_constructor_arg(
+                arg_toks,
+                continuation_indent,
+                arg_continuation_indent,
+                suffix,
+                cfg,
+            )
+            if expanded_array is not None:
+                content_lines.extend(expanded_array)
+                continue
             split = _greedy_split_arg(
                 arg_toks, continuation_indent, arg_continuation_indent, suffix, cfg
             )
@@ -1638,6 +1860,44 @@ def _prefer_exploded_arg_list(tokens: list[Token]) -> bool:
     return len(paren_lines) > 1
 
 
+def _arg_list_explosion_needs_greedy_split(
+    body: list[Token], indent: str, cfg: FormatConfig
+) -> bool:
+    """Return True when exploding ``body`` would split inside at least one argument."""
+    paren_span = _find_explodable_arg_list_span(body)
+    if paren_span is None:
+        return False
+
+    open_idx, close_idx = paren_span
+    inner = body[open_idx + 1 : close_idx]
+    close_indent = _arg_list_anchor_indent(body, open_idx, indent)
+    continuation_indent = close_indent + " " * cfg.indent_width
+    arg_continuation_indent = continuation_indent + " " * cfg.indent_width
+    arg_groups = _split_at_top_commas(inner)
+
+    for i, arg_toks in enumerate(arg_groups):
+        is_last = i == len(arg_groups) - 1
+        suffix = "" if is_last else ","
+        single_line = continuation_indent + _render_tokens(arg_toks) + suffix
+
+        # + 2 reserves space for a trailing statement continuation marker.
+        if len(single_line) + 2 <= cfg.line_length:
+            continue
+        if len(arg_toks) == 1 and arg_toks[0].kind == TokenKind.STRING:
+            continue
+        expanded_array = _try_expand_array_constructor_arg(
+            arg_toks,
+            continuation_indent,
+            arg_continuation_indent,
+            suffix,
+            cfg,
+        )
+        if expanded_array is None:
+            return True
+
+    return False
+
+
 def _try_split_assignment_before_rhs_explosion(
     body: list[Token],
     comment: Token | None,
@@ -1659,16 +1919,21 @@ def _try_split_assignment_before_rhs_explosion(
     if open_idx <= assignment_idx:
         return None
 
-    # If ``lhs = rhs_call(`` already fits, use normal RHS explosion path.
-    rhs_open_line = indent + _render_tokens(body[: open_idx + 1]) + " &"
-    if len(rhs_open_line) <= cfg.line_length:
-        return None
-
     step = cfg.indent_width if continuation_step is None else continuation_step
     continuation_indent = indent + " " * step
     lhs_tokens = body[: assignment_idx + 1]
     lhs_line = indent + _render_tokens(lhs_tokens) + " &"
     if len(lhs_line) > cfg.line_length:
+        return None
+
+    # If ``lhs = rhs_call(`` already fits, only force assignment splitting when
+    # RHS explosion would otherwise split inside arguments.
+    rhs_open_line = indent + _render_tokens(body[: open_idx + 1]) + " &"
+    if len(
+        rhs_open_line
+    ) <= cfg.line_length and not _arg_list_explosion_needs_greedy_split(
+        body, indent, cfg
+    ):
         return None
 
     rhs_tokens = body[assignment_idx + 1 :]
@@ -1699,6 +1964,15 @@ def _condition_continuation_indent(
 
     first_word = first.text.lower()
     starts_condition = first_word in _KEYWORD_SPACE_BEFORE_PAREN
+    # Handle `else if (...)` where the condition starts after the branch keyword.
+    if (
+        not starts_condition
+        and first_word == "else"
+        and len(body) > 1
+        and body[1].kind == TokenKind.KEYWORD
+        and body[1].text.lower() == "if"
+    ):
+        starts_condition = True
     # Handle `do while (...)` where condition starts after the second keyword.
     if (
         not starts_condition
@@ -1769,6 +2043,10 @@ def render_logical_line(
     if tokens and tokens[-1].kind == TokenKind.COMMENT:
         comment = tokens[-1]
         body = tokens[:-1]
+        # A bare "!" (optionally with whitespace) carries no information.
+        # Treat it as absent to avoid noisy trailing comment markers.
+        if re.fullmatch(r"!\s*", comment.text):
+            comment = None
 
     force_trailing_continuation = False
     while body and body[-1].kind == TokenKind.CONTINUATION:
@@ -1791,6 +2069,17 @@ def render_logical_line(
     full_line = code_line + comment_str
 
     decl = _parse_declaration(body)
+    pointer_decl = _try_split_single_entity_pointer_declaration(
+        body,
+        comment,
+        indent,
+        cfg,
+        continuation_step=continuation_step,
+        force_trailing_continuation=force_trailing_continuation,
+    )
+    if pointer_decl is not None and len(code_line) > cfg.line_length:
+        return pointer_decl
+
     if decl is not None and len(decl.entities) > 1:
         should_explode = len(code_line) > cfg.line_length
         if should_explode:

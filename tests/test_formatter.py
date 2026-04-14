@@ -197,6 +197,26 @@ class TestDeclarationCanonicalization:
         assert "dimension(:, : &" not in result
         assert "), allocatable :: basis_shell_info" in result
 
+    def test_single_entity_procedure_pointer_prefers_arrow_split(self):
+        src = (
+            "procedure, public :: calculate_polarizability => "
+            "calculate_polarizability_damped_polarizability_task\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert lines[0].startswith("procedure, public :: calculate_polarizability =>")
+        assert lines[0].endswith(" &")
+        assert lines[1].strip() == "calculate_polarizability_damped_polarizability_task"
+        assert not lines[0].startswith("procedure, &")
+
+    def test_single_entity_procedure_pointer_falls_back_to_colon_break(self):
+        src = "procedure, public, protected, private :: p => q\n"
+        result = fmt(src, line_length=43)
+        lines = result.splitlines()
+        assert lines[0] == "procedure, public, protected, private :: &"
+        assert lines[1].strip() == "p => &"
+        assert lines[2].strip() == "q"
+
 
 class TestPercentSplitting:
     """Lines must never be broken adjacent to a % (component access) operator."""
@@ -808,6 +828,18 @@ class TestContinuationWithComments:
         assert not data_lines[1].lstrip().startswith("&")
         assert not at_line.lstrip().startswith("&")
 
+    def test_bare_trailing_bang_comment_is_removed(self):
+        source = (
+            "      this%dipole_moment_output = input%is_keyword_present( &\n"
+            "                                     'dipole moment output', &\n"
+            "                                     'solver cc propagation' &\n"
+            "                                  )  !\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        assert "  !" not in lines[-1]
+        assert lines[-1].rstrip().endswith(")")
+
 
 class TestKeywordParenSpacing:
     def test_if_space_before_paren(self):
@@ -1168,6 +1200,22 @@ class TestArgListExpansion:
         assert rhs_lines
         assert all((len(line) - len(line.lstrip())) == rhs_col for line in rhs_lines)
 
+    def test_long_keyword_array_constructor_arg_splits_by_elements(self):
+        src = (
+            "call output%printf("
+            "'m', '(a2)    (i4)  (f11.6)(f11.6)(f11.6)(f11.6)(f11.6)', "
+            "chars=[embedding%molecules(m)%atoms(a)%symbol], "
+            "ints=[m], "
+            "reals=[r(1)*conversion_factor, r(2)*conversion_factor, "
+            "r(3)*conversion_factor, embedding%molecules(m)%get_chi_i(a), "
+            "embedding%molecules(m)%get_eta_i(a)], fs='(t6,a)')\n"
+        )
+        result = fmt(src)
+        assert "r(1) &\n" not in result
+        assert "reals = [r(1) * conversion_factor, &" in result
+        assert "r(2) * conversion_factor, &" in result
+        assert "r(3) * conversion_factor, &" in result
+
     def test_expanded_is_idempotent(self):
         src = (
             "call some_subroutine("
@@ -1307,6 +1355,19 @@ class TestArgListExpansion:
         lines = result.splitlines()
         assert all(len(line) <= 90 for line in lines)
         assert any("g_ABCD_p(" in line for line in lines)
+
+    def test_splits_after_assignment_when_rhs_explosion_would_split_inside_args(self):
+        src = (
+            "L_Jpq_copy(J, p - overlap_p%first + 1, q - overlap_q%first + 1) = "
+            "L_Jpq(J, p - range_p%first + 1, q - range_q%first + 1)\n"
+        )
+        result = fmt(src, line_length=90)
+        lines = result.splitlines()
+        assert all(len(line) <= 90 for line in lines)
+        assert lines[0].rstrip().endswith("= &")
+        assert lines[1].lstrip().startswith("L_Jpq(")
+        assert not any(line.rstrip().endswith("p - &") for line in lines)
+        assert not any(line.rstrip().endswith("range_p%first &") for line in lines)
 
 
 class TestStringHandling:
@@ -1660,6 +1721,15 @@ class TestLineBreakPriority:
         assert len(lines) > 1
         assert lines[0].rstrip().endswith("= &")
 
+    def test_assignment_split_skips_unary_minus_rhs_start(self):
+        src = "alpha_Im = -half * (alpha + beta + gamma + delta + epsilon)\n"
+        result = fmt(src, line_length=28)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert lines[0].startswith("alpha_Im = - ")
+        assert not lines[0].rstrip().endswith("= &")
+        assert not lines[0].rstrip().endswith("- &")
+
     def test_split_prefers_low_precedence_operator_boundary(self):
         src = "value = alpha*beta + gamma*delta + epsilon*zeta + eta*theta\n"
         result = fmt(src, line_length=44)
@@ -1684,6 +1754,20 @@ class TestLineBreakPriority:
         lines = result.splitlines()
         assert not any(line.lstrip().startswith(".or.") for line in lines[1:])
         assert any(line.rstrip().endswith(".or. &") for line in lines[:-1])
+
+    def test_else_if_logical_chain_prefers_break_after_operator(self):
+        src = (
+            "if (method == 'cc3') then\n"
+            "   x = 1\n"
+            "else if (method .eq. 'ccs' .or. method .eq. 'cc2' .or. "
+            "method .eq. 'low memory cc2' .or. method .eq. 'mlcc2') then\n"
+            "   x = 2\n"
+            "end if\n"
+        )
+        result = fmt(src, line_length=88)
+        assert "else if (method == 'ccs' .or. method == 'cc2' .or." in result
+        assert "method == 'low memory cc2' .or. &" in result
+        assert "\n         method == 'mlcc2') then\n" in result
 
 
 class TestColonSpacing:
