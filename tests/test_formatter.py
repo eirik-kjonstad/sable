@@ -96,6 +96,10 @@ class TestSpacing:
         result = fmt("call foo(a,b,c)")
         assert "a, b, c" in result
 
+    def test_compact_equals_for_named_args_in_calls(self):
+        result = fmt("result = fn(a = 2, b = 3)")
+        assert "result = fn(a=2, b=3)" in result
+
     def test_no_space_inside_parens(self):
         result = fmt("call foo( a, b )")
         # Should not have space right inside the parens
@@ -137,23 +141,23 @@ class TestSpacing:
 class TestDeclarationCanonicalization:
     def test_inserts_double_colon_for_typed_declaration(self):
         result = fmt("integer x\nreal(kind=8) y\n")
-        assert result.splitlines() == ["integer :: x", "real(kind = 8) :: y"]
+        assert result.splitlines() == ["integer :: x", "real(kind=8) :: y"]
 
     def test_canonical_attribute_order(self):
         result = fmt("integer, optional, parameter, intent(in), dimension(:,:) :: x\n")
         assert (
             result.strip()
-            == "integer, dimension(:, :), optional, parameter, intent(in) :: x"
+            == "integer, dimension(:, :), intent(in), optional, parameter :: x"
         )
 
-    def test_attributed_declaration_explodes_one_entity_per_line(self):
+    def test_attributed_declaration_wraps_with_deeper_continuation_indent(self):
         src = "integer, optional :: alpha_variable, beta_variable, gamma_variable\n"
         result = fmt(src, line_length=30)
         assert result.splitlines() == [
             "integer, optional :: &",
-            "   alpha_variable, &",
-            "   beta_variable, &",
-            "   gamma_variable",
+            "      alpha_variable, &",
+            "      beta_variable, &",
+            "      gamma_variable",
         ]
 
     def test_attributed_declaration_does_not_explode_when_it_fits(self):
@@ -164,15 +168,26 @@ class TestDeclarationCanonicalization:
             == "real(dp), dimension(:, :, :, :), pointer :: g_vvvv_order_p, g_vvvv_r4"
         )
 
-    def test_long_declaration_explodes_one_entity_per_line(self):
+    def test_long_declaration_packs_entities_across_continuation_lines(self):
         src = "integer alpha_variable, beta_variable, gamma_variable, delta_variable\n"
         result = fmt(src, line_length=50)
         assert result.splitlines() == [
-            "integer :: &",
-            "   alpha_variable, &",
-            "   beta_variable, &",
-            "   gamma_variable, &",
-            "   delta_variable",
+            "integer :: alpha_variable, beta_variable, &",
+            "      gamma_variable, delta_variable",
+        ]
+
+    def test_long_allocatable_declaration_prefers_two_packed_lines(self):
+        src = (
+            "integer, dimension(:), allocatable :: alpha, beta, alpha_beta, "
+            "sorted_alpha, sorted_beta, sorted_alpha_beta\n"
+        )
+        result = fmt(src, line_length=88)
+        assert result.splitlines() == [
+            (
+                "integer, dimension(:), allocatable :: alpha, beta, alpha_beta, "
+                "sorted_alpha, &"
+            ),
+            "      sorted_beta, sorted_alpha_beta",
         ]
 
     def test_long_trailing_comment_is_hoisted_above_declaration(self):
@@ -438,7 +453,7 @@ class TestIndentation:
     def test_declaration_trailing_type_name_does_not_open_indent_block(self):
         source = (
             "integer :: I, TOTCHARGE, TOTprim, TOTcont, icharge, R, set, type\n"
-            "character(len = 45) :: CC\n"
+            "character(len=45) :: CC\n"
         )
         result = fmt(source)
         lines = result.splitlines()
@@ -1122,6 +1137,23 @@ class TestArgListExpansion:
         )
         assert lines[4] == (" " * callee_col) + ")"
 
+    def test_exploded_named_args_use_compact_assignment(self):
+        src = (
+            "solver = eigen_davidson_solver("
+            "transformer = transformer, "
+            "convergence_checker = this%convergence_checker, "
+            "n_solutions = this%n_states)\n"
+        )
+        result = fmt(src, line_length=55)
+        lines = result.splitlines()
+        assert any("eigen_davidson_solver(" in line for line in lines)
+        assert any("transformer=transformer" in line for line in lines)
+        assert any(
+            "convergence_checker=this%convergence_checker" in line for line in lines
+        )
+        assert any("n_solutions=this%n_states" in line for line in lines)
+        assert not any("transformer = transformer" in line for line in lines)
+
     def test_short_call_stays_single_line(self):
         result = fmt("call foo(a, b, c)\n")
         assert result.strip() == "call foo(a, b, c)"
@@ -1212,7 +1244,7 @@ class TestArgListExpansion:
         )
         result = fmt(src)
         assert "r(1) &\n" not in result
-        assert "reals = [r(1) * conversion_factor, &" in result
+        assert "reals=[r(1) * conversion_factor, &" in result
         assert "r(2) * conversion_factor, &" in result
         assert "r(3) * conversion_factor, &" in result
 
@@ -1266,10 +1298,10 @@ class TestArgListExpansion:
         assert "this%references( &" not in result
         assert lines[0].startswith("this%references(1) = citation(")
         assert lines[0].endswith(" &")
-        assert any(line.lstrip().startswith("implementation =") for line in lines)
-        assert any(line.lstrip().startswith("journal =") for line in lines)
-        assert any(line.lstrip().startswith("title_ =") for line in lines)
-        assert any(line.lstrip().startswith("year =") for line in lines)
+        assert any(line.lstrip().startswith("implementation=") for line in lines)
+        assert any(line.lstrip().startswith("journal=") for line in lines)
+        assert any(line.lstrip().startswith("title_=") for line in lines)
+        assert any(line.lstrip().startswith("year=") for line in lines)
         callee_col = lines[0].index("citation")
         assert lines[-1] == (" " * callee_col) + ")"
 
@@ -1403,8 +1435,8 @@ class TestStringHandling:
         assert "status is (i0) and error message is: " in result
         # Long call should be split at top-level arguments.
         assert lines[0].endswith(" &")
-        assert any("chars = [this%get_name()]" in line for line in lines)
-        assert any("ints = [io_status]" in line for line in lines)
+        assert any("chars=[this%get_name()]" in line for line in lines)
+        assert any("ints=[io_status]" in line for line in lines)
         # Formatter must respect the configured limit for generated lines.
         assert all(len(line) <= 90 for line in lines)
 
@@ -1630,13 +1662,13 @@ class TestStringSplittingInArgList:
             "convergence of ground and excited state coupled cluster equations', "
             "volume = '153', issue = '1', pages = '014104', year = '2020', "
             "doi = '10.1063/5.0010989', "
-            "authors = [character(len = 25) :: 'Eirik F. Kjønstad', "
+            "authors = [character(len=25) :: 'Eirik F. Kjønstad', "
             "'Sarai D. Folkestad', 'Henrik Koch'])\n"
         )
         result = fmt(src, line_length=100)
         lines = result.splitlines()
         assert all(len(line) <= 100 for line in lines)
-        assert any("title_ =" in line for line in lines)
+        assert any("title_=" in line for line in lines)
         # In-string continuation introduces a fragment that starts with '&'.
         assert any(line.lstrip().startswith("&") for line in lines)
 
@@ -1691,7 +1723,7 @@ class TestStringSplitting:
 
     def test_string_split_avoids_mid_word_breaks(self):
         src = (
-            "character(len = 500) :: description1 = "
+            "character(len=500) :: description1 = "
             "'A DIIS CC ground state amplitude equations solver. It uses an "
             "extrapolation of previous quasi-Newton perturbation theory estimates "
             "of the next amplitudes.'\n"
@@ -1709,7 +1741,7 @@ class TestLineBreakPriority:
         result = fmt(src, line_length=44)
         lines = result.splitlines()
         assert len(lines) > 1
-        assert lines[0].rstrip().endswith(":: &")
+        assert lines[0].rstrip().endswith(", &")
         assert not any(
             line.rstrip().endswith("= &") for line in lines
         )  # ensure comma wins here

@@ -227,6 +227,7 @@ def _needs_space_before(
     curr: Token,
     paren_depth: int = 0,
     prev_prev: Token | None = None,
+    compact_named_assign: bool = False,
 ) -> bool:
     """Return True if a space is required before *curr*.
 
@@ -277,6 +278,12 @@ def _needs_space_before(
     if pk == TokenKind.COMMA:
         return True
 
+    # Compact keyword/named assignment in call/declaration argument lists.
+    if compact_named_assign and (
+        ck == TokenKind.OP_ASSIGN or pk == TokenKind.OP_ASSIGN
+    ):
+        return False
+
     # Space around binary operators (but not unary minus/plus)
     if ck in _BINARY_OP_KINDS and ck not in _NO_SPACE_KINDS:
         return True
@@ -321,6 +328,39 @@ def _needs_space_before(
         ):
             return True
 
+    return False
+
+
+def _is_compact_equals_paren_open(tokens: list[Token], open_idx: int) -> bool:
+    """Return True when '=' should be compact inside this parenthesized group."""
+    if open_idx <= 0 or tokens[open_idx].kind != TokenKind.LPAREN:
+        return False
+
+    prev = tokens[open_idx - 1]
+    prev_prev = tokens[open_idx - 2] if open_idx >= 2 else None
+
+    if prev.kind == TokenKind.NAME:
+        # Calls and procedure declarations: foo(a=1, b=2)
+        return True
+
+    if prev.kind != TokenKind.KEYWORD:
+        return False
+
+    word = prev.text.lower()
+    if word in _KEYWORD_SPACE_BEFORE_PAREN:
+        return False
+    if word in _NON_CALL_PAREN_KEYWORDS:
+        return True
+    if word in _DECL_TYPE_KEYWORDS:
+        # `select type (...)` is a control construct, not a declaration arg list.
+        if (
+            word == "type"
+            and prev_prev is not None
+            and prev_prev.kind == TokenKind.KEYWORD
+            and prev_prev.text.lower() == "select"
+        ):
+            return False
+        return True
     return False
 
 
@@ -657,25 +697,25 @@ _DECL_ATTRIBUTE_ORDER: dict[str, int] = {
     "codimension": 1,
     "allocatable": 2,
     "pointer": 3,
-    "target": 4,
-    "contiguous": 5,
-    "optional": 6,
-    "parameter": 7,
-    "value": 8,
-    "save": 9,
-    "public": 10,
-    "private": 11,
-    "protected": 12,
-    "volatile": 13,
-    "asynchronous": 14,
-    "external": 15,
-    "intrinsic": 16,
-    "bind": 17,
-    "pass": 18,
-    "nopass": 19,
-    "deferred": 20,
-    "non_overridable": 21,
-    "intent": 22,
+    "intent": 4,
+    "target": 5,
+    "contiguous": 6,
+    "optional": 7,
+    "parameter": 8,
+    "value": 9,
+    "save": 10,
+    "public": 11,
+    "private": 12,
+    "protected": 13,
+    "volatile": 14,
+    "asynchronous": 15,
+    "external": 16,
+    "intrinsic": 17,
+    "bind": 18,
+    "pass": 19,
+    "nopass": 20,
+    "deferred": 21,
+    "non_overridable": 22,
 }
 _DECL_ATTRIBUTE_DEFAULT_ORDER = len(_DECL_ATTRIBUTE_ORDER)
 
@@ -991,24 +1031,119 @@ def _try_split_single_entity_pointer_declaration(
     return _finalize([header_line, lhs_line] + rhs_lines)
 
 
+def _try_wrap_declaration_entity_list(
+    decl: _DeclarationParts,
+    comment: Token | None,
+    indent: str,
+    cfg: FormatConfig,
+    continuation_step: int | None,
+    force_trailing_continuation: bool,
+) -> list[str] | None:
+    """Wrap declaration entities across as few continuation lines as possible."""
+    if len(decl.entities) <= 1:
+        return None
+
+    step = cfg.indent_width if continuation_step is None else continuation_step
+    continuation_indent = indent + " " * (step * 2)
+    comment_str = ("  " + comment.text) if comment else ""
+
+    header_tokens = decl.prefix_tokens + [
+        _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
+    ]
+    header = indent + _render_tokens(header_tokens)
+    rendered_entities = [_render_tokens(entity) for entity in decl.entities]
+    first_prefix = header + " "
+    n = len(rendered_entities)
+    idx = 0
+    lines: list[str] = []
+
+    while idx < n:
+        prefix = first_prefix if idx == 0 else continuation_indent
+        prefix_len = len(prefix)
+        start_idx = idx
+        line_entities: list[str] = []
+
+        while idx < n:
+            entity_text = rendered_entities[idx]
+            separator_len = 0 if not line_entities else 2  # ", "
+            suffix_len = 3 if idx < n - 1 else 0  # ", &"
+            candidate_len = (
+                prefix_len
+                + sum(len(text) for text in line_entities)
+                + max(0, len(line_entities) - 1) * 2
+                + separator_len
+                + len(entity_text)
+                + suffix_len
+            )
+            if candidate_len <= cfg.line_length:
+                line_entities.append(entity_text)
+                idx += 1
+                continue
+            break
+
+        if not line_entities:
+            if idx == 0:
+                header_line = header + " &"
+                if len(header_line) > cfg.line_length:
+                    return None
+                lines.append(header_line)
+                continue
+            return None
+
+        is_last = idx == n
+        line = prefix + ", ".join(line_entities)
+        if not is_last:
+            line += ", &"
+        else:
+            if force_trailing_continuation:
+                line += " &"
+            if comment is not None:
+                line += comment_str
+
+        if len(line) > cfg.line_length:
+            return None
+        lines.append(line)
+
+        if idx == start_idx:
+            return None
+
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Line rendering
 # ---------------------------------------------------------------------------
 
 
-def _render_tokens(tokens: list[Token]) -> str:
+def _render_tokens(tokens: list[Token], compact_named_assign: bool = False) -> str:
     """Render a token list to a string, inserting spaces via the spacing rules."""
     parts: list[str] = []
     prev: Token | None = None
     prev_prev: Token | None = None
     depth = 0
-    for tok in tokens:
-        if _needs_space_before(prev, tok, depth, prev_prev):
+    paren_compact_stack: list[bool] = []
+    compact_depth = 1 if compact_named_assign else 0
+    for idx, tok in enumerate(tokens):
+        if _needs_space_before(
+            prev, tok, depth, prev_prev, compact_named_assign=compact_depth > 0
+        ):
             parts.append(" ")
         parts.append(tok.text)
-        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+        if tok.kind == TokenKind.LPAREN:
+            compact = _is_compact_equals_paren_open(tokens, idx)
+            paren_compact_stack.append(compact)
+            if compact:
+                compact_depth += 1
             depth += 1
-        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+        elif tok.kind == TokenKind.LBRACKET:
+            depth += 1
+        elif tok.kind == TokenKind.RPAREN:
+            if paren_compact_stack:
+                compact = paren_compact_stack.pop()
+                if compact:
+                    compact_depth = max(0, compact_depth - 1)
+            depth = max(0, depth - 1)
+        elif tok.kind == TokenKind.RBRACKET:
             depth = max(0, depth - 1)
         prev_prev = prev
         prev = tok
@@ -1348,6 +1483,7 @@ def _greedy_split_arg(
     cont_indent: str,
     suffix: str,
     cfg: FormatConfig,
+    compact_named_assign: bool = False,
 ) -> list[str]:
     """Split a long argument across multiple content lines using greedy splitting.
 
@@ -1384,8 +1520,17 @@ def _greedy_split_arg(
                     continue
 
         budget = cfg.line_length - len(current_indent) - 2  # room for ' &'
-        split_at = _pick_split_index(remaining, budget, current_depth)
-        parts_acc = _render_prefix(remaining[:split_at], current_depth)
+        split_at = _pick_split_index(
+            remaining,
+            budget,
+            current_depth,
+            compact_named_assign=compact_named_assign,
+        )
+        parts_acc = _render_prefix(
+            remaining[:split_at],
+            current_depth,
+            compact_named_assign=compact_named_assign,
+        )
 
         for tok in remaining[:split_at]:
             if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
@@ -1403,7 +1548,15 @@ def _greedy_split_arg(
 
         current_indent = cont_indent
 
-    return lines if lines else [first_indent + _render_tokens(arg_toks) + suffix]
+    return (
+        lines
+        if lines
+        else [
+            first_indent
+            + _render_tokens(arg_toks, compact_named_assign=compact_named_assign)
+            + suffix
+        ]
+    )
 
 
 def _try_expand_array_constructor_arg(
@@ -1412,6 +1565,7 @@ def _try_expand_array_constructor_arg(
     cont_indent: str,
     suffix: str,
     cfg: FormatConfig,
+    compact_named_assign: bool = False,
 ) -> list[str] | None:
     """Try one-element-per-line expansion for a long ``[ ... ]`` constructor arg.
 
@@ -1450,16 +1604,26 @@ def _try_expand_array_constructor_arg(
     if len(elements) <= 1:
         return None
 
-    prefix = _render_tokens(arg_toks[: open_idx + 1])
-    postfix = _render_tokens(arg_toks[close_idx:])
+    prefix = _render_tokens(
+        arg_toks[: open_idx + 1], compact_named_assign=compact_named_assign
+    )
+    postfix = _render_tokens(
+        arg_toks[close_idx:], compact_named_assign=compact_named_assign
+    )
     lines: list[str] = []
 
     for idx, elem_toks in enumerate(elements):
         is_last = idx == len(elements) - 1
         if idx == 0:
-            line = first_indent + prefix + _render_tokens(elem_toks)
+            line = (
+                first_indent
+                + prefix
+                + _render_tokens(elem_toks, compact_named_assign=compact_named_assign)
+            )
         else:
-            line = cont_indent + _render_tokens(elem_toks)
+            line = cont_indent + _render_tokens(
+                elem_toks, compact_named_assign=compact_named_assign
+            )
 
         if is_last:
             line = line + postfix + suffix
@@ -1474,14 +1638,28 @@ def _try_expand_array_constructor_arg(
     return lines
 
 
-def _render_prefix(tokens: list[Token], start_depth: int) -> list[str]:
+def _render_prefix(
+    tokens: list[Token],
+    start_depth: int,
+    compact_named_assign: bool = False,
+) -> list[str]:
     """Render token prefix to spacing-aware string chunks."""
     parts: list[str] = []
     prev: Token | None = None
     prev_prev: Token | None = None
     depth = start_depth
     for tok in tokens:
-        space = " " if _needs_space_before(prev, tok, depth, prev_prev) else ""
+        space = (
+            " "
+            if _needs_space_before(
+                prev,
+                tok,
+                depth,
+                prev_prev,
+                compact_named_assign=compact_named_assign,
+            )
+            else ""
+        )
         parts.append(space + tok.text)
         if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
             depth += 1
@@ -1492,7 +1670,12 @@ def _render_prefix(tokens: list[Token], start_depth: int) -> list[str]:
     return parts
 
 
-def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int:
+def _pick_split_index(
+    tokens: list[Token],
+    budget: int,
+    start_depth: int,
+    compact_named_assign: bool = False,
+) -> int:
     """Pick a split boundary using precedence: comma > '=' > low-precedence ops."""
     if not tokens:
         return 0
@@ -1541,7 +1724,17 @@ def _pick_split_index(tokens: list[Token], budget: int, start_depth: int) -> int
     depth_after: list[int] = []
 
     for idx, tok in enumerate(tokens):
-        space = " " if _needs_space_before(prev, tok, depth, prev_prev) else ""
+        space = (
+            " "
+            if _needs_space_before(
+                prev,
+                tok,
+                depth,
+                prev_prev,
+                compact_named_assign=compact_named_assign,
+            )
+            else ""
+        )
         token_str = space + tok.text
         if char_count + len(token_str) > budget and idx > 0:
             fit_upto = idx
@@ -1777,7 +1970,11 @@ def _try_expand_arg_list(
         is_last = i == len(arg_groups) - 1
         suffix = "" if is_last else ","
 
-        single_line = continuation_indent + _render_tokens(arg_toks) + suffix
+        single_line = (
+            continuation_indent
+            + _render_tokens(arg_toks, compact_named_assign=True)
+            + suffix
+        )
         # + 2 reserves space for the trailing ' &' that will be appended later.
         if len(single_line) + 2 <= cfg.line_length:
             content_lines.append(single_line)
@@ -1808,12 +2005,18 @@ def _try_expand_arg_list(
                 arg_continuation_indent,
                 suffix,
                 cfg,
+                compact_named_assign=True,
             )
             if expanded_array is not None:
                 content_lines.extend(expanded_array)
                 continue
             split = _greedy_split_arg(
-                arg_toks, continuation_indent, arg_continuation_indent, suffix, cfg
+                arg_toks,
+                continuation_indent,
+                arg_continuation_indent,
+                suffix,
+                cfg,
+                compact_named_assign=True,
             )
             content_lines.extend(split)
 
@@ -1878,7 +2081,11 @@ def _arg_list_explosion_needs_greedy_split(
     for i, arg_toks in enumerate(arg_groups):
         is_last = i == len(arg_groups) - 1
         suffix = "" if is_last else ","
-        single_line = continuation_indent + _render_tokens(arg_toks) + suffix
+        single_line = (
+            continuation_indent
+            + _render_tokens(arg_toks, compact_named_assign=True)
+            + suffix
+        )
 
         # + 2 reserves space for a trailing statement continuation marker.
         if len(single_line) + 2 <= cfg.line_length:
@@ -1891,6 +2098,7 @@ def _arg_list_explosion_needs_greedy_split(
             arg_continuation_indent,
             suffix,
             cfg,
+            compact_named_assign=True,
         )
         if expanded_array is None:
             return True
@@ -1915,9 +2123,28 @@ def _try_split_assignment_before_rhs_explosion(
     paren_span = _find_explodable_arg_list_span(body)
     if paren_span is None:
         return None
-    open_idx, _close_idx = paren_span
+    open_idx, close_idx = paren_span
     if open_idx <= assignment_idx:
         return None
+
+    has_lhs_subscript = any(
+        _is_lhs_subscript_paren_group(body, lhs_open_idx, lhs_close_idx)
+        for lhs_open_idx, lhs_close_idx in _find_top_level_paren_groups(body)
+    )
+    if has_lhs_subscript:
+        depth = 0
+        has_named_assign = False
+        for tok in body[open_idx + 1 : close_idx]:
+            if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+                depth += 1
+            elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+                depth = max(0, depth - 1)
+            elif tok.kind == TokenKind.OP_ASSIGN and depth == 0:
+                has_named_assign = True
+                break
+        if has_named_assign:
+            # Keep `lhs(subscript) = rhs_call(named=...)` on the first line.
+            return None
 
     step = cfg.indent_width if continuation_step is None else continuation_step
     continuation_indent = indent + " " * step
@@ -2083,6 +2310,17 @@ def render_logical_line(
     if decl is not None and len(decl.entities) > 1:
         should_explode = len(code_line) > cfg.line_length
         if should_explode:
+            wrapped_decl = _try_wrap_declaration_entity_list(
+                decl,
+                comment,
+                indent,
+                cfg,
+                continuation_step=continuation_step,
+                force_trailing_continuation=force_trailing_continuation,
+            )
+            if wrapped_decl is not None:
+                return wrapped_decl
+
             step = cfg.indent_width if continuation_step is None else continuation_step
             continuation_indent = indent + " " * step
             header_tokens = decl.prefix_tokens + [
