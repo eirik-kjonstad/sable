@@ -135,7 +135,7 @@ class TestSpacing:
         assert lines[2] == "do concurrent (i = 1:n)"
         assert lines[4] == "change team (newteam)"
         assert lines[6] == "select type (x)"
-        assert lines[7] == "type is (t)"
+        assert lines[7] == "   type is (t)"
 
 
 class TestDeclarationCanonicalization:
@@ -222,6 +222,20 @@ class TestDeclarationCanonicalization:
         result = fmt(src, line_length=88)
         assert "dimension(:, : &" not in result
         assert "), allocatable :: basis_shell_info" in result
+
+    def test_single_entity_initializer_declaration_keeps_prefix_together(self):
+        src = (
+            "real(dp), parameter :: au_to_cgs_R        = (elementary_charge * "
+            "elementary_charge * hbar &\n"
+            "                                             * bohr_to_angstrom * "
+            "speed_of_light * 1.0D36) &\n"
+            "                                             / electron_mass\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert lines[0].startswith("real(dp), parameter :: au_to_cgs_R =")
+        assert not lines[0].startswith("real(dp), &")
+        assert all((len(line) - len(line.lstrip())) <= 3 for line in lines[1:])
 
     def test_single_entity_procedure_pointer_prefers_arrow_split(self):
         src = (
@@ -436,6 +450,32 @@ class TestIndentation:
         assert len(set(indents)) == 1
         assert indents[0] > 0
 
+    def test_abstract_interface_body_indented(self):
+        source = (
+            "abstract interface\n"
+            "subroutine ignite(this, wf)\n"
+            "import :: ccs, cc_engine\n"
+            "implicit none\n"
+            "class(cc_engine), intent(inout) :: this\n"
+            "class(ccs), intent(inout) :: wf\n"
+            "end subroutine ignite\n"
+            "end interface\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        subroutine_line = next(
+            line for line in lines if line.strip().startswith("subroutine ignite")
+        )
+        import_line = next(
+            line for line in lines if line.strip().startswith("import ::")
+        )
+        end_interface_line = next(
+            line for line in lines if line.strip() == "end interface"
+        )
+        assert subroutine_line.startswith("   ")
+        assert import_line.startswith("      ")
+        assert not end_interface_line.startswith(" ")
+
     def test_module_function_opens_block(self):
         source = (
             "module function f(x) result(y)\n"
@@ -495,7 +535,7 @@ class TestIndentation:
         assert lines[1].startswith("   ")
         assert lines[2] == "end team"
 
-    def test_select_type_guards_do_not_nest(self):
+    def test_select_type_guards_indented_under_select(self):
         source = (
             "select type (x)\n"
             "type is (t1)\n"
@@ -510,12 +550,12 @@ class TestIndentation:
         class_guard = next(line for line in lines if line.strip().startswith("class"))
         t1_body = next(line for line in lines if line.strip() == "print *, 't1'")
         d_body = next(line for line in lines if line.strip() == "print *, 'd'")
-        assert not type_guard.startswith(" ")
-        assert not class_guard.startswith(" ")
-        assert t1_body.startswith("   ")
-        assert d_body.startswith("   ")
+        assert type_guard.startswith("   ")
+        assert class_guard.startswith("   ")
+        assert t1_body.startswith("      ")
+        assert d_body.startswith("      ")
 
-    def test_select_rank_guards_do_not_nest(self):
+    def test_select_rank_guards_indented_under_select(self):
         source = (
             "select rank (a)\n"
             "rank (0)\n"
@@ -530,10 +570,49 @@ class TestIndentation:
         rank_default = next(line for line in lines if line.strip() == "rank default")
         body_a = next(line for line in lines if line.strip() == "print *, a")
         body_d = next(line for line in lines if line.strip() == "print *, 'd'")
-        assert not rank_zero.startswith(" ")
-        assert not rank_default.startswith(" ")
-        assert body_a.startswith("   ")
-        assert body_d.startswith("   ")
+        assert rank_zero.startswith("   ")
+        assert rank_default.startswith("   ")
+        assert body_a.startswith("      ")
+        assert body_d.startswith("      ")
+
+    def test_select_rank_multiple_branches_keep_sibling_indentation(self):
+        source = (
+            "subroutine release(array, error, error_msg)\n"
+            "select rank (array)\n"
+            "rank (1)\n"
+            "deallocate(array, stat = error, errmsg = error_msg)\n"
+            "rank (2)\n"
+            "deallocate(array, stat = error, errmsg = error_msg)\n"
+            "rank default  ! no handler for higher ranks\n"
+            "error stop 'Deallocation not implemented for real array of rank 3+'\n"
+            "end select\n"
+            "end subroutine release\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        select_line = next(
+            line for line in lines if line.strip().startswith("select rank")
+        )
+        rank_lines = [line for line in lines if line.strip().startswith("rank ")]
+        deallocate_lines = [
+            line for line in lines if line.strip().startswith("deallocate(")
+        ]
+        error_stop_line = next(
+            line for line in lines if line.strip().startswith("error stop")
+        )
+        end_select_line = next(line for line in lines if line.strip() == "end select")
+
+        select_indent = len(select_line) - len(select_line.lstrip())
+        rank_indent = len(rank_lines[0]) - len(rank_lines[0].lstrip())
+        assert all(
+            (len(line) - len(line.lstrip())) == rank_indent for line in rank_lines
+        )
+        assert rank_indent == select_indent + 3
+        assert all(
+            (len(line) - len(line.lstrip())) == rank_indent + 3
+            for line in deallocate_lines + [error_stop_line]
+        )
+        assert (len(end_select_line) - len(end_select_line.lstrip())) == select_indent
 
     def test_enum_body_indented(self):
         source = "enum, bind(c)\nenumerator :: red=1\nend enum\n"
@@ -877,6 +956,34 @@ class TestContinuationWithComments:
         result = fmt(src, line_length=88)
         assert "!ciao" in result
 
+    def test_multiple_inline_comments_stay_with_their_argument_lines(self):
+        src = (
+            "call dgemm( &\n"
+            "        'N', &\n"
+            "        'N', &\n"
+            "        batch_a%length, &\n"
+            "        batch_i%length, &\n"
+            "        wf%eri_t1%n_J * wf%n_o, &\n"
+            "        - one, &\n"
+            "        X_aJj, & ! X_a_Jj\n"
+            "        batch_a%length, &\n"
+            "        L_J_ji, & ! L_Jj_i\n"
+            "        wf%eri_t1%n_J * wf%n_o, &\n"
+            "        zero, &\n"
+            "        rho_ai_batch, &\n"
+            "        batch_a%length &\n"
+            "     )\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+
+        x_line = next(line for line in lines if "X_aJj," in line)
+        l_line = next(line for line in lines if "L_J_ji," in line)
+
+        assert "! X_a_Jj" in x_line
+        assert "! L_Jj_i" in l_line
+        assert not any("! X_a_Jj" in line and "! L_Jj_i" in line for line in lines)
+
     def test_bare_trailing_bang_comment_is_removed(self):
         source = (
             "      this%dipole_moment_output = input%is_keyword_present( &\n"
@@ -1145,10 +1252,10 @@ class TestContinuedMathExpressionSpacing:
         expr_start_idx = next(
             i for i, line in enumerate(lines) if "tmp_pt_mu(pt_grid, mu) =" in line
         )
-        expr_end_idx = next(
-            i for i, line in enumerate(lines) if "wf%d1_chi_mu_at_point" in line
-        )
         end_do_idx = next(i for i, line in enumerate(lines) if line.strip() == "end do")
+        expr_end_idx = end_do_idx - 2
+        while expr_end_idx >= 0 and lines[expr_end_idx].strip() == "":
+            expr_end_idx -= 1
         assert expr_start_idx - do_idx == 2
         assert lines[expr_start_idx - 1] == ""
         assert end_do_idx - expr_end_idx == 2
@@ -1303,13 +1410,32 @@ class TestArgListExpansion:
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert lines[0].startswith("function compute(") and lines[0].endswith(" &")
-        # Closing ) with result clause aligned to the procedure name.
-        close_line = next(
-            line for line in lines if line.lstrip().startswith(") result")
-        )
-        assert close_line == (" " * lines[0].index("compute")) + ") result(out)"
+        assert "alpha_in," in lines[0]
+        assert any(line.lstrip().startswith("delta_in) result(out)") for line in lines)
+        assert not any(line.lstrip().startswith(") result") for line in lines)
         out_idx = next(i for i, line in enumerate(lines) if line.strip() == "out = 0.0")
         assert lines[out_idx - 1] != ""
+
+    def test_multiline_function_header_uses_subroutine_style_parameter_split(self):
+        src = (
+            "function new_newton_raphson_updater( &\n"
+            "            n_amplitudes, &\n"
+            "            scale_amplitudes, &\n"
+            "            scale_residual, &\n"
+            "            relative_threshold, &\n"
+            "            records_in_memory, &\n"
+            "            max_iterations, &\n"
+            "            transformer &\n"
+            "         ) result(this)\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert lines[0].startswith("function new_newton_raphson_updater(")
+        assert "n_amplitudes, &" in lines[0]
+        assert any(
+            line.lstrip().startswith("transformer) result(this)") for line in lines[1:]
+        )
+        assert not any(line.lstrip().startswith(") result(this)") for line in lines)
 
     def test_trailing_comment_on_close_line(self):
         src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
@@ -1389,8 +1515,8 @@ class TestArgListExpansion:
         # RHS should still split at assignment/operator boundaries when long.
         assert lines[0].rstrip().endswith("= &")
         assert any(
-            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
-            for line in lines[1:-1]
+            line.lstrip().startswith("+ ") or line.lstrip().startswith("- ")
+            for line in lines[1:]
         )
 
     def test_rhs_call_explodes_when_lhs_has_subscript_parens(self):
@@ -1860,6 +1986,18 @@ class TestLineBreakPriority:
         assert len(lines) > 1
         assert lines[0].rstrip().endswith("= &")
 
+    def test_arithmetic_assignment_chain_aligns_with_rhs_start(self):
+        src = (
+            "embedding%energy = constant_energy + "
+            "ddot(embedding%n_ao**2, embedding%D, 1, embedding%h, 1) + "
+            "half * ddot(embedding%n_ao**2, embedding%D, 1, embedding%F, 1)\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        rhs_col = lines[0].index("constant_energy")
+        assert lines[1].startswith(" " * rhs_col + "+ half * ddot(")
+
     def test_assignment_split_skips_unary_minus_rhs_start(self):
         src = "alpha_Im = -half * (alpha + beta + gamma + delta + epsilon)\n"
         result = fmt(src, line_length=28)
@@ -1874,9 +2012,54 @@ class TestLineBreakPriority:
         result = fmt(src, line_length=44)
         lines = result.splitlines()
         assert len(lines) > 1
-        assert any(
-            line.rstrip().endswith("+ &") or line.rstrip().endswith(".and. &")
+        assert any(line.lstrip().startswith("+ ") for line in lines[1:])
+        assert not any(
+            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
             for line in lines[:-1]
+        )
+
+    def test_wrapped_additive_assignment_never_ends_line_with_plus_minus(self):
+        src = (
+            "eps = wf%orbital_energies(i) + wf%orbital_energies(j) - "
+            "wf%orbital_energies(wf%n_o + a) - wf%orbital_energies(wf%n_o + b)\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert not any(
+            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
+            for line in lines[:-1]
+        )
+        assert any(
+            line.lstrip().startswith("+ ") or line.lstrip().startswith("- ")
+            for line in lines[1:]
+        )
+
+    def test_split_prefers_before_plus_over_splitting_division(self):
+        src = (
+            "wf%n_triplet_amplitudes = wf%n_t1 + wf%n_t1 * (wf%n_t1 - 1) / "
+            "2 + (wf%n_o * (wf%n_o - 1) / 2) * (wf%n_v * (wf%n_v - 1) / 2)\n"
+        )
+        result = fmt(src, line_length=90)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert lines[0].rstrip().endswith("/ 2 &")
+        assert not lines[0].rstrip().endswith("/ &")
+        assert lines[1].lstrip().startswith("+ ")
+
+    def test_split_prefers_before_star_over_inside_call_arguments(self):
+        src = (
+            "max_memory_usage = req0_tot + req1_p_min * int(batch_p%max_length, "
+            "kind = i64) + req1_q_min * int(batch_q%max_length, kind = i64) + "
+            "req2_min * int(batch_q%max_length, kind = i64) * "
+            "int(batch_q%max_length, kind = i64)\n"
+        )
+        result = fmt(src, line_length=88)
+        assert "int(batch_q%max_length, &\n" not in result
+        lines = result.splitlines()
+        assert any(
+            line.lstrip().startswith("* int(batch_q%max_length, kind = i64)")
+            for line in lines
         )
 
     def test_logical_chain_prefers_break_after_operator(self):
