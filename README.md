@@ -56,16 +56,16 @@ Example:
 ```fortran
 ! Before
 IF(A .EQ. B)THEN
-CALL compute(alpha,beta,gamma)
+CALL compute(argument_alpha,argument_beta,argument_gamma)
 ENDIF
 
 ! After
 if (A == B) then
-   call compute( &
-           alpha, &
-           beta, &
-           gamma &
-        )
+
+   call compute(argument_alpha, &
+                argument_beta, &
+                argument_gamma)
+
 end if
 ```
 
