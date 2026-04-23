@@ -499,6 +499,8 @@ class IndentTracker:
     def __init__(self, indent_width: int) -> None:
         self.level = 0
         self.width = indent_width
+        # Per active SELECT construct, track whether a selector branch body is open.
+        self._select_branch_open: list[bool] = []
 
     def indent(self) -> str:
         return " " * (self.level * self.width)
@@ -516,12 +518,36 @@ class IndentTracker:
 
         non_comment = self._core_tokens(line_tokens)
         first = self._first_keyword(line_tokens)
-        did_close = first in _INDENT_CLOSE or self._is_select_guard(non_comment)
-        if not did_close and self._is_labelled_continue(line_tokens):
-            # Legacy labelled-do termination: `10 continue` closes one DO level.
-            did_close = True
-        if did_close:
-            self.close()
+        is_select_branch = self._is_select_branch(non_comment)
+        is_end_select = self._is_end_select(non_comment)
+        did_close = False
+
+        # Selector guards (`case`, `type is`, `class ...`, `rank ...`) close only
+        # the previous selector body, not the select construct itself.
+        if is_select_branch:
+            if self._select_branch_open and self._select_branch_open[-1]:
+                self.close()
+                did_close = True
+                self._select_branch_open[-1] = False
+        else:
+            # If we are ending a SELECT while inside the last selector body, close
+            # that body before applying the normal `end select` close.
+            if (
+                is_end_select
+                and self._select_branch_open
+                and self._select_branch_open[-1]
+            ):
+                self.close()
+                did_close = True
+                self._select_branch_open[-1] = False
+
+            closes = first in _INDENT_CLOSE or self._is_select_guard(non_comment)
+            if not closes and self._is_labelled_continue(line_tokens):
+                # Legacy labelled-do termination: `10 continue` closes one DO level.
+                closes = True
+            if closes:
+                self.close()
+                did_close = True
 
         ind = self.indent()
 
@@ -541,8 +567,16 @@ class IndentTracker:
                 and last_tok.kind == TokenKind.KEYWORD
                 and last == "then"
             )
-            if opens_via_last or self._is_block_opener(first, non_comment):
+            opened = opens_via_last or self._is_block_opener(first, non_comment)
+            if opened:
                 self.open()
+                if first == "select":
+                    self._select_branch_open.append(False)
+                elif is_select_branch and self._select_branch_open:
+                    self._select_branch_open[-1] = True
+
+            if is_end_select and self._select_branch_open:
+                self._select_branch_open.pop()
 
         return ind, did_close
 
@@ -595,6 +629,36 @@ class IndentTracker:
         return False
 
     @staticmethod
+    def _is_select_branch(non_comment: list[Token]) -> bool:
+        """Return True for selector branch lines within SELECT constructs."""
+        if not non_comment:
+            return False
+        if (
+            non_comment[0].kind == TokenKind.KEYWORD
+            and non_comment[0].text.lower() == "case"
+        ):
+            return True
+        return IndentTracker._is_select_guard(non_comment)
+
+    @staticmethod
+    def _is_end_select(non_comment: list[Token]) -> bool:
+        """Return True for both `endselect` and `end select`."""
+        if not non_comment:
+            return False
+        if (
+            non_comment[0].kind == TokenKind.KEYWORD
+            and non_comment[0].text.lower() == "endselect"
+        ):
+            return True
+        return (
+            len(non_comment) > 1
+            and non_comment[0].kind == TokenKind.KEYWORD
+            and non_comment[0].text.lower() == "end"
+            and non_comment[1].kind == TokenKind.KEYWORD
+            and non_comment[1].text.lower() == "select"
+        )
+
+    @staticmethod
     def _is_labelled_continue(line_tokens: list[Token]) -> bool:
         """Return True for lines like `15 continue` (legacy labelled-DO terminator)."""
         non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
@@ -637,6 +701,13 @@ class IndentTracker:
                 has_assignment = any(t.kind == TokenKind.OP_ASSIGN for t in before)
                 if not has_decl_marker and not has_assignment:
                     return True
+        if first == "abstract":
+            # `abstract interface` opens an interface block.
+            return (
+                len(non_comment) > 1
+                and non_comment[1].kind == TokenKind.KEYWORD
+                and non_comment[1].text.lower() == "interface"
+            )
         if first not in _INDENT_OPEN:
             return False
         if first == "change":
@@ -1980,26 +2051,89 @@ def _try_expand_arg_list(
     If an individual argument is itself too long to fit on one continuation
     line, it is split further using greedy continuation at a deeper indent.
     """
-    paren_span = _find_explodable_arg_list_span(body)
+    inline_comments: list[Token] = [
+        tok
+        for tok in body
+        if tok.kind == TokenKind.COMMENT and not re.fullmatch(r"!\s*", tok.text)
+    ]
+    if comment is not None and not re.fullmatch(r"!\s*", comment.text):
+        inline_comments.append(comment)
+
+    code_body = [tok for tok in body if tok.kind != TokenKind.COMMENT]
+    if not code_body:
+        return None
+
+    paren_span = _find_explodable_arg_list_span(code_body)
     if paren_span is None:
         return None
 
     open_idx, close_idx = paren_span
-    inner = body[open_idx + 1 : close_idx]
+    inner = code_body[open_idx + 1 : close_idx]
 
-    close_indent = _arg_list_anchor_indent(body, open_idx, indent)
+    close_indent = _arg_list_anchor_indent(code_body, open_idx, indent)
     arg_groups = _split_at_top_commas(inner)
+
+    open_line = code_body[open_idx].line
+    close_line = code_body[close_idx].line
+    arg_line_spans: list[tuple[int, int]] = []
+    for group in arg_groups:
+        if group:
+            arg_line_spans.append(
+                (
+                    min(tok.line for tok in group),
+                    max(tok.line for tok in group),
+                )
+            )
+        else:
+            arg_line_spans.append((open_line, open_line))
+
+    open_line_comments: list[Token] = []
+    arg_comments: list[list[Token]] = [[] for _ in arg_groups]
+    close_line_comments: list[Token] = []
+
+    for cmt in sorted(inline_comments, key=lambda tok: (tok.line, tok.col)):
+        if cmt.line >= close_line:
+            close_line_comments.append(cmt)
+            continue
+        if cmt.line <= open_line:
+            open_line_comments.append(cmt)
+            continue
+
+        attached = False
+        for idx, (start, end) in enumerate(arg_line_spans):
+            if start <= cmt.line <= end:
+                arg_comments[idx].append(cmt)
+                attached = True
+                break
+        if attached:
+            continue
+
+        # Fallback: attach to the nearest preceding arg, otherwise the first arg.
+        previous_idx: int | None = None
+        for idx, (_, end) in enumerate(arg_line_spans):
+            if end <= cmt.line:
+                previous_idx = idx
+            else:
+                break
+        target_idx = 0 if previous_idx is None else previous_idx
+        arg_comments[target_idx].append(cmt)
+
+    def _comment_suffix(comment_tokens: list[Token]) -> str:
+        if not comment_tokens:
+            return ""
+        return "".join(f"  {tok.text}" for tok in comment_tokens)
 
     # Build content strings for every physical line that will carry a ' &'.
     # Prefer placing the first argument on the opening line (``foo(arg1, &``)
     # and, when possible, the closing ``)`` on the final argument line.
-    prefix_with_open = _render_tokens(body[: open_idx + 1])
-    close_tail_tokens = body[close_idx + 1 :]
+    prefix_with_open = _render_tokens(code_body[: open_idx + 1])
+    close_tail_tokens = code_body[close_idx + 1 :]
     can_hang_open_and_close = len(arg_groups) >= 2 and not close_tail_tokens
     first_arg_column_indent = " " * (len(indent) + len(prefix_with_open))
     default_continuation_indent = close_indent + " " * cfg.indent_width
 
     content_lines: list[str] = [indent + prefix_with_open]
+    content_comments: list[str] = [_comment_suffix(open_line_comments)]
     start_arg_idx = 0
     if can_hang_open_and_close:
         first_suffix = ","
@@ -2007,8 +2141,10 @@ def _try_expand_arg_list(
             _render_tokens(arg_groups[0], compact_named_assign=True) + first_suffix
         )
         first_line = content_lines[0] + first_inline
-        if len(first_line) + 2 <= cfg.line_length:
+        first_comment = content_comments[0] + _comment_suffix(arg_comments[0])
+        if len(first_line) + len(first_comment) + 2 <= cfg.line_length:
             content_lines[0] = first_line
+            content_comments[0] = first_comment
             start_arg_idx = 1
 
     continuation_indent = (
@@ -2023,14 +2159,18 @@ def _try_expand_arg_list(
         is_last = i == len(arg_groups) - 1
         suffix = "" if is_last else ","
 
-        single_line = (
-            continuation_indent
-            + _render_tokens(arg_toks, compact_named_assign=True)
-            + suffix
+        single_line = continuation_indent + _render_tokens(
+            arg_toks, compact_named_assign=True
         )
+        arg_comment_suffix = _comment_suffix(arg_comments[i])
+        single_line_with_suffix = single_line + suffix
+        rendered_arg_lines: list[str] = []
         # + 2 reserves space for the trailing ' &' that will be appended later.
-        if len(single_line) + 2 <= cfg.line_length:
-            content_lines.append(single_line)
+        if (
+            len(single_line_with_suffix) + len(arg_comment_suffix) + 2
+            <= cfg.line_length
+        ):
+            rendered_arg_lines.append(single_line_with_suffix)
         elif len(arg_toks) == 1 and arg_toks[0].kind == TokenKind.STRING:
             # Single string arg too long: split using Fortran in-string continuation.
             # In-string & must be the last character on the physical line — no space
@@ -2045,12 +2185,12 @@ def _try_expand_arg_list(
                 cfg.line_length,
             )
             if len(frags) > 1:
-                content_lines.append(continuation_indent + frags[0])  # ends with &
+                rendered_arg_lines.append(continuation_indent + frags[0])  # ends with &
                 for frag in frags[1:-1]:
-                    content_lines.append(frag)  # ends with &
-                content_lines.append(frags[-1] + suffix)  # ends with quote
+                    rendered_arg_lines.append(frag)  # ends with &
+                rendered_arg_lines.append(frags[-1] + suffix)  # ends with quote
             else:
-                content_lines.append(single_line)
+                rendered_arg_lines.append(single_line_with_suffix)
         else:
             expanded_array = _try_expand_array_constructor_arg(
                 arg_toks,
@@ -2061,17 +2201,23 @@ def _try_expand_arg_list(
                 compact_named_assign=True,
             )
             if expanded_array is not None:
-                content_lines.extend(expanded_array)
-                continue
-            split = _greedy_split_arg(
-                arg_toks,
-                continuation_indent,
-                arg_continuation_indent,
-                suffix,
-                cfg,
-                compact_named_assign=True,
+                rendered_arg_lines.extend(expanded_array)
+            else:
+                rendered_arg_lines.extend(
+                    _greedy_split_arg(
+                        arg_toks,
+                        continuation_indent,
+                        arg_continuation_indent,
+                        suffix,
+                        cfg,
+                        compact_named_assign=True,
+                    )
+                )
+        if rendered_arg_lines:
+            content_lines.extend(rendered_arg_lines)
+            content_comments.extend(
+                [""] * (len(rendered_arg_lines) - 1) + [arg_comment_suffix]
             )
-            content_lines.extend(split)
 
     # Append statement continuation markers.  Lines that end with a bare "&" are
     # in-string continuation lines: they must NOT receive an additional statement
@@ -2080,19 +2226,21 @@ def _try_expand_arg_list(
     inline_close = can_hang_open_and_close and start_arg_idx == 1
     if inline_close and content_lines:
         content_lines[-1] = content_lines[-1] + ")"
-        if comment is not None:
-            content_lines[-1] = content_lines[-1] + "  " + comment.text
+        content_comments[-1] = content_comments[-1] + _comment_suffix(
+            close_line_comments
+        )
 
     for idx, content in enumerate(content_lines):
         is_last_content = idx == len(content_lines) - 1
+        comment_suffix = content_comments[idx] if idx < len(content_comments) else ""
         if inline_close and is_last_content:
-            lines.append(content)
+            lines.append(content + comment_suffix)
             continue
         if content.endswith("&"):
             # In-string continuation: emit without adding a statement &
-            lines.append(content)
+            lines.append(content + comment_suffix)
         else:
-            lines.append(content + " &")
+            lines.append(content + " &" + comment_suffix)
 
     if inline_close:
         return lines
@@ -2100,9 +2248,12 @@ def _try_expand_arg_list(
     # Closing line(s): start with ')' at the callee anchor, then any suffix tokens
     # (e.g. result(r) or chained expressions). Reuse the normal line renderer so
     # long suffixes are also split to respect line_length.
-    close_tokens = [body[close_idx]] + body[close_idx + 1 :]
-    if comment is not None:
-        close_tokens.append(comment)
+    close_tokens = [code_body[close_idx]] + code_body[close_idx + 1 :]
+    if close_line_comments:
+        close_comment_text = "  ".join(tok.text for tok in close_line_comments)
+        close_tokens.append(
+            _make_token(TokenKind.COMMENT, close_comment_text, close_line_comments[0])
+        )
     lines.extend(render_logical_line(close_tokens, close_indent, cfg))
 
     return lines

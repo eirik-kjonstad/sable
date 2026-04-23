@@ -135,7 +135,7 @@ class TestSpacing:
         assert lines[2] == "do concurrent (i = 1:n)"
         assert lines[4] == "change team (newteam)"
         assert lines[6] == "select type (x)"
-        assert lines[7] == "type is (t)"
+        assert lines[7] == "   type is (t)"
 
 
 class TestDeclarationCanonicalization:
@@ -436,6 +436,32 @@ class TestIndentation:
         assert len(set(indents)) == 1
         assert indents[0] > 0
 
+    def test_abstract_interface_body_indented(self):
+        source = (
+            "abstract interface\n"
+            "subroutine ignite(this, wf)\n"
+            "import :: ccs, cc_engine\n"
+            "implicit none\n"
+            "class(cc_engine), intent(inout) :: this\n"
+            "class(ccs), intent(inout) :: wf\n"
+            "end subroutine ignite\n"
+            "end interface\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        subroutine_line = next(
+            line for line in lines if line.strip().startswith("subroutine ignite")
+        )
+        import_line = next(
+            line for line in lines if line.strip().startswith("import ::")
+        )
+        end_interface_line = next(
+            line for line in lines if line.strip() == "end interface"
+        )
+        assert subroutine_line.startswith("   ")
+        assert import_line.startswith("      ")
+        assert not end_interface_line.startswith(" ")
+
     def test_module_function_opens_block(self):
         source = (
             "module function f(x) result(y)\n"
@@ -495,7 +521,7 @@ class TestIndentation:
         assert lines[1].startswith("   ")
         assert lines[2] == "end team"
 
-    def test_select_type_guards_do_not_nest(self):
+    def test_select_type_guards_indented_under_select(self):
         source = (
             "select type (x)\n"
             "type is (t1)\n"
@@ -510,12 +536,12 @@ class TestIndentation:
         class_guard = next(line for line in lines if line.strip().startswith("class"))
         t1_body = next(line for line in lines if line.strip() == "print *, 't1'")
         d_body = next(line for line in lines if line.strip() == "print *, 'd'")
-        assert not type_guard.startswith(" ")
-        assert not class_guard.startswith(" ")
-        assert t1_body.startswith("   ")
-        assert d_body.startswith("   ")
+        assert type_guard.startswith("   ")
+        assert class_guard.startswith("   ")
+        assert t1_body.startswith("      ")
+        assert d_body.startswith("      ")
 
-    def test_select_rank_guards_do_not_nest(self):
+    def test_select_rank_guards_indented_under_select(self):
         source = (
             "select rank (a)\n"
             "rank (0)\n"
@@ -530,10 +556,49 @@ class TestIndentation:
         rank_default = next(line for line in lines if line.strip() == "rank default")
         body_a = next(line for line in lines if line.strip() == "print *, a")
         body_d = next(line for line in lines if line.strip() == "print *, 'd'")
-        assert not rank_zero.startswith(" ")
-        assert not rank_default.startswith(" ")
-        assert body_a.startswith("   ")
-        assert body_d.startswith("   ")
+        assert rank_zero.startswith("   ")
+        assert rank_default.startswith("   ")
+        assert body_a.startswith("      ")
+        assert body_d.startswith("      ")
+
+    def test_select_rank_multiple_branches_keep_sibling_indentation(self):
+        source = (
+            "subroutine release(array, error, error_msg)\n"
+            "select rank (array)\n"
+            "rank (1)\n"
+            "deallocate(array, stat = error, errmsg = error_msg)\n"
+            "rank (2)\n"
+            "deallocate(array, stat = error, errmsg = error_msg)\n"
+            "rank default  ! no handler for higher ranks\n"
+            "error stop 'Deallocation not implemented for real array of rank 3+'\n"
+            "end select\n"
+            "end subroutine release\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+        select_line = next(
+            line for line in lines if line.strip().startswith("select rank")
+        )
+        rank_lines = [line for line in lines if line.strip().startswith("rank ")]
+        deallocate_lines = [
+            line for line in lines if line.strip().startswith("deallocate(")
+        ]
+        error_stop_line = next(
+            line for line in lines if line.strip().startswith("error stop")
+        )
+        end_select_line = next(line for line in lines if line.strip() == "end select")
+
+        select_indent = len(select_line) - len(select_line.lstrip())
+        rank_indent = len(rank_lines[0]) - len(rank_lines[0].lstrip())
+        assert all(
+            (len(line) - len(line.lstrip())) == rank_indent for line in rank_lines
+        )
+        assert rank_indent == select_indent + 3
+        assert all(
+            (len(line) - len(line.lstrip())) == rank_indent + 3
+            for line in deallocate_lines + [error_stop_line]
+        )
+        assert (len(end_select_line) - len(end_select_line.lstrip())) == select_indent
 
     def test_enum_body_indented(self):
         source = "enum, bind(c)\nenumerator :: red=1\nend enum\n"
@@ -876,6 +941,34 @@ class TestContinuationWithComments:
         )
         result = fmt(src, line_length=88)
         assert "!ciao" in result
+
+    def test_multiple_inline_comments_stay_with_their_argument_lines(self):
+        src = (
+            "call dgemm( &\n"
+            "        'N', &\n"
+            "        'N', &\n"
+            "        batch_a%length, &\n"
+            "        batch_i%length, &\n"
+            "        wf%eri_t1%n_J * wf%n_o, &\n"
+            "        - one, &\n"
+            "        X_aJj, & ! X_a_Jj\n"
+            "        batch_a%length, &\n"
+            "        L_J_ji, & ! L_Jj_i\n"
+            "        wf%eri_t1%n_J * wf%n_o, &\n"
+            "        zero, &\n"
+            "        rho_ai_batch, &\n"
+            "        batch_a%length &\n"
+            "     )\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+
+        x_line = next(line for line in lines if "X_aJj," in line)
+        l_line = next(line for line in lines if "L_J_ji," in line)
+
+        assert "! X_a_Jj" in x_line
+        assert "! L_Jj_i" in l_line
+        assert not any("! X_a_Jj" in line and "! L_Jj_i" in line for line in lines)
 
     def test_bare_trailing_bang_comment_is_removed(self):
         source = (
