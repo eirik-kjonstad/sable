@@ -209,6 +209,16 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
     current: list[Token] = []
     continued = False
     saw_continuation_content = False
+    deferred_trailing_comments: list[Token] = []
+
+    def _emit_current() -> list[Token]:
+        nonlocal current
+        if deferred_trailing_comments:
+            current.extend(deferred_trailing_comments)
+            deferred_trailing_comments.clear()
+        emitted = current
+        current = []
+        return emitted
 
     i = 0
     while i < len(tokens):
@@ -221,7 +231,7 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                 # Preserve the marker so rendering does not silently drop it.
                 current.append(Token(TokenKind.CONTINUATION, "&", tok.line, tok.col))
             if current:
-                yield current
+                yield _emit_current()
             return
 
         if tok.kind == TokenKind.CONTINUATION:
@@ -235,6 +245,7 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
             j = i + 1
             while j < len(tokens) and tokens[j].kind == TokenKind.COMMENT:
                 j += 1
+            trailing_comments = tokens[i + 1 : j]
             if j < len(tokens) and tokens[j].kind == TokenKind.NEWLINE:
                 # If the next non-blank physical line starts with a preprocessor
                 # directive, do not fold it into this logical line. Directives
@@ -245,8 +256,8 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                 if k < len(tokens) and tokens[k].kind == TokenKind.DIRECTIVE:
                     current.append(tok)
                     if current:
-                        yield current
-                    current = []
+                        deferred_trailing_comments.extend(trailing_comments)
+                        yield _emit_current()
                     continued = False
                     saw_continuation_content = False
                     i = j + 1
@@ -272,8 +283,8 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                     # line begin as a fresh logical line.
                     current.append(tok)  # keep the & in this segment's tokens
                     if current:
-                        yield current
-                    current = []
+                        deferred_trailing_comments.extend(trailing_comments)
+                        yield _emit_current()
                     continued = False
                     saw_continuation_content = False
                     i = j + 1  # skip past the newline that follows &
@@ -297,6 +308,7 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
                     # continued stays False: next content line starts fresh
                 else:
                     # Normal continuation — join the next line into current
+                    deferred_trailing_comments.extend(trailing_comments)
                     continued = True
                     saw_continuation_content = False
                     i = j + 1  # skip continuation & and newline
@@ -309,24 +321,23 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
         elif tok.kind == TokenKind.NEWLINE:
             if not continued:
                 if current:
-                    yield current
+                    yield _emit_current()
                 else:
                     yield []  # blank line — preserve as empty logical line
-                current = []
             else:
                 # A blank line between a trailing '&' and continued content is
                 # allowed; keep waiting until we see content on a continuation line.
                 if saw_continuation_content:
                     if current:
-                        yield current
-                        current = []
+                        yield _emit_current()
                     continued = False
                     saw_continuation_content = False
         elif tok.kind == TokenKind.SEMICOLON:
             # Semicolon acts as statement separator
             if current:
-                yield current
-            current = []
+                yield _emit_current()
+            else:
+                deferred_trailing_comments.clear()
         else:
             current.append(tok)
             if continued:
@@ -335,4 +346,4 @@ def iter_logical_lines(tokens: list[Token]) -> Iterator[list[Token]]:
         i += 1
 
     if current:
-        yield current
+        yield _emit_current()

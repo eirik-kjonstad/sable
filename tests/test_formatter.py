@@ -153,12 +153,12 @@ class TestDeclarationCanonicalization:
     def test_attributed_declaration_wraps_with_deeper_continuation_indent(self):
         src = "integer, optional :: alpha_variable, beta_variable, gamma_variable\n"
         result = fmt(src, line_length=30)
-        assert result.splitlines() == [
-            "integer, optional :: &",
-            "      alpha_variable, &",
-            "      beta_variable, &",
-            "      gamma_variable",
-        ]
+        lines = result.splitlines()
+        assert lines[0] == "integer, optional :: &"
+        entity_col = len(lines[0][:-2]) + 1  # right after ":: "
+        assert lines[1].startswith(" " * entity_col + "alpha_variable,")
+        assert lines[2].startswith(" " * entity_col + "beta_variable,")
+        assert lines[3].startswith(" " * entity_col + "gamma_variable")
 
     def test_attributed_declaration_does_not_explode_when_it_fits(self):
         src = "real(dp), pointer, dimension(:, :, :, :) :: g_vvvv_order_p, g_vvvv_r4\n"
@@ -171,10 +171,10 @@ class TestDeclarationCanonicalization:
     def test_long_declaration_packs_entities_across_continuation_lines(self):
         src = "integer alpha_variable, beta_variable, gamma_variable, delta_variable\n"
         result = fmt(src, line_length=50)
-        assert result.splitlines() == [
-            "integer :: alpha_variable, beta_variable, &",
-            "      gamma_variable, delta_variable",
-        ]
+        lines = result.splitlines()
+        assert lines[0] == "integer :: alpha_variable, beta_variable, &"
+        entity_col = lines[0].index("alpha_variable")
+        assert lines[1].startswith(" " * entity_col + "gamma_variable, delta_variable")
 
     def test_long_allocatable_declaration_prefers_two_packed_lines(self):
         src = (
@@ -182,13 +182,24 @@ class TestDeclarationCanonicalization:
             "sorted_alpha, sorted_beta, sorted_alpha_beta\n"
         )
         result = fmt(src, line_length=88)
-        assert result.splitlines() == [
-            (
-                "integer, dimension(:), allocatable :: alpha, beta, alpha_beta, "
-                "sorted_alpha, &"
-            ),
-            "      sorted_beta, sorted_alpha_beta",
-        ]
+        lines = result.splitlines()
+        assert lines[0] == (
+            "integer, dimension(:), allocatable :: alpha, beta, alpha_beta, "
+            "sorted_alpha, &"
+        )
+        entity_col = lines[0].index("alpha")
+        assert lines[1].startswith(" " * entity_col + "sorted_beta, sorted_alpha_beta")
+
+    def test_long_allocatable_declaration_alignment_when_three_lines(self):
+        src = (
+            "integer, dimension(:), allocatable :: alpha, beta, alpha_beta, "
+            "sorted_alpha, sorted_beta, sorted_alpha_beta\n"
+        )
+        result = fmt(src, line_length=75)
+        lines = result.splitlines()
+        entity_col = lines[0].index("alpha")
+        assert lines[1].startswith(" " * entity_col + "sorted_alpha, sorted_beta,")
+        assert lines[2].startswith(" " * entity_col + "sorted_alpha_beta")
 
     def test_long_trailing_comment_is_hoisted_above_declaration(self):
         src = (
@@ -221,6 +232,8 @@ class TestDeclarationCanonicalization:
         lines = result.splitlines()
         assert lines[0].startswith("procedure, public :: calculate_polarizability =>")
         assert lines[0].endswith(" &")
+        lhs_col = lines[0].index("calculate_polarizability")
+        assert (len(lines[1]) - len(lines[1].lstrip())) == lhs_col
         assert lines[1].strip() == "calculate_polarizability_damped_polarizability_task"
         assert not lines[0].startswith("procedure, &")
 
@@ -230,6 +243,8 @@ class TestDeclarationCanonicalization:
         lines = result.splitlines()
         assert lines[0] == "procedure, public, protected, private :: &"
         assert lines[1].strip() == "p => &"
+        lhs_col = lines[1].index("p")
+        assert (len(lines[2]) - len(lines[2].lstrip())) == lhs_col
         assert lines[2].strip() == "q"
 
 
@@ -843,6 +858,25 @@ class TestContinuationWithComments:
         assert not data_lines[1].lstrip().startswith("&")
         assert not at_line.lstrip().startswith("&")
 
+    def test_inline_comment_after_trailing_continuation_is_preserved(self):
+        src = (
+            "call dgemm('N', &\n"
+            "           'N', &\n"
+            "           n_o_m, &\n"
+            "           ab_m, &\n"
+            "           n_v_m, &\n"
+            "           half, &\n"
+            "           t_m_ijcd, & !ciao\n"
+            "           n_o_m, &\n"
+            "           g_m_cdab, &\n"
+            "           n_v_m, &\n"
+            "           zero, &\n"
+            "           X2_m_ijab, &\n"
+            "           n_o_m)\n"
+        )
+        result = fmt(src, line_length=88)
+        assert "!ciao" in result
+
     def test_bare_trailing_bang_comment_is_removed(self):
         source = (
             "      this%dipole_moment_output = input%is_keyword_present( &\n"
@@ -1092,6 +1126,50 @@ class TestBlankLines:
         assert "\n\n" not in result
 
 
+class TestContinuedMathExpressionSpacing:
+    def test_wrapped_arithmetic_assignment_gets_blank_line_before_and_after(self):
+        src = (
+            "do pt_grid = 1, n_points\n"
+            "   tmp_pt_mu(pt_grid, mu) = tmp_pt_mu(pt_grid, mu) + four * "
+            "wf%grid%weight(pt_grid) * v_sigma(pt_grid) * d1_rho(pt_grid, deriv) * "
+            "wf%d1_chi_mu_at_point(pt_grid, mu, deriv)\n"
+            "end do\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        do_idx = next(
+            i
+            for i, line in enumerate(lines)
+            if line.strip() == "do pt_grid = 1, n_points"
+        )
+        expr_start_idx = next(
+            i for i, line in enumerate(lines) if "tmp_pt_mu(pt_grid, mu) =" in line
+        )
+        expr_end_idx = next(
+            i for i, line in enumerate(lines) if "wf%d1_chi_mu_at_point" in line
+        )
+        end_do_idx = next(i for i, line in enumerate(lines) if line.strip() == "end do")
+        assert expr_start_idx - do_idx == 2
+        assert lines[expr_start_idx - 1] == ""
+        assert end_do_idx - expr_end_idx == 2
+        assert lines[end_do_idx - 1] == ""
+
+    def test_existing_blank_after_wrapped_arithmetic_assignment_is_not_doubled(self):
+        src = (
+            "do pt_grid = 1, n_points\n"
+            "   tmp_pt_mu(pt_grid, mu) = tmp_pt_mu(pt_grid, mu) + four * "
+            "wf%grid%weight(pt_grid) * v_sigma(pt_grid) * d1_rho(pt_grid, deriv) * "
+            "wf%d1_chi_mu_at_point(pt_grid, mu, deriv)\n"
+            "\n"
+            "end do\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        end_do_idx = next(i for i, line in enumerate(lines) if line.strip() == "end do")
+        assert lines[end_do_idx - 1] == ""
+        assert lines[end_do_idx - 2].strip() != ""
+
+
 class TestArgListExpansion:
     """One-argument-per-line explosion for long parenthesised argument lists."""
 
@@ -1102,22 +1180,52 @@ class TestArgListExpansion:
         )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
-        callee_col = lines[0].index("some_subroutine")
-        arg_indent = callee_col + 3
-        # Opening line ends with &
+        arg_indent = lines[0].index("argument_alpha")
+        # Opening line keeps the first arg and ends with &
         assert lines[0].startswith("call some_subroutine(") and lines[0].endswith(" &")
-        # Each argument on its own line with , and &
+        assert "argument_alpha," in lines[0]
+        # Remaining arguments on their own lines with , and &
         assert (len(lines[1]) - len(lines[1].lstrip())) == arg_indent
-        assert "argument_alpha," in lines[1] and lines[1].endswith(" &")
-        assert "argument_beta," in lines[2] and lines[2].endswith(" &")
-        assert "argument_gamma," in lines[3] and lines[3].endswith(" &")
-        # Last argument has no comma, still has &
-        assert "argument_delta" in lines[4] and lines[4].endswith(" &")
-        # Closing ) on its own line aligned to callee start.
-        assert lines[5] == (" " * callee_col) + ")"
+        assert "argument_beta," in lines[1] and lines[1].endswith(" &")
+        assert "argument_gamma," in lines[2] and lines[2].endswith(" &")
+        # Last argument closes the call on the same line.
+        assert "argument_delta)" in lines[3]
+        assert not lines[3].endswith(" &")
         # Ampersands are not vertically aligned; avoid padding churn.
-        amp_cols = [line.rindex("&") for line in lines[:5]]
+        amp_cols = [line.rindex("&") for line in lines if line.endswith(" &")]
         assert len(set(amp_cols)) > 1
+
+    def test_exploded_call_gets_blank_line_before_and_after(self):
+        src = (
+            "subroutine foo()\n"
+            "  call some_subroutine("
+            "argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+            "  x = 1\n"
+            "end subroutine foo\n"
+        )
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        call_idx = next(
+            i for i, line in enumerate(lines) if "call some_subroutine(" in line
+        )
+        assert lines[call_idx - 1] == ""
+        close_idx = next(i for i, line in enumerate(lines) if "argument_delta)" in line)
+        assert lines[close_idx + 1] == ""
+
+    def test_exploded_call_does_not_add_second_blank_after(self):
+        src = (
+            "subroutine foo()\n"
+            "  call some_subroutine("
+            "argument_alpha, argument_beta, argument_gamma, argument_delta)\n"
+            "\n"
+            "  x = 1\n"
+            "end subroutine foo\n"
+        )
+        result = fmt(src, line_length=60)
+        lines = result.splitlines()
+        close_idx = next(i for i, line in enumerate(lines) if "argument_delta)" in line)
+        assert lines[close_idx + 1] == ""
+        assert lines[close_idx + 2].strip() == "x = 1"
 
     def test_assignment_call_explodes_with_hanging_indent(self):
         src = (
@@ -1148,9 +1256,8 @@ class TestArgListExpansion:
         lines = result.splitlines()
         assert any("eigen_davidson_solver(" in line for line in lines)
         assert any("transformer=transformer" in line for line in lines)
-        assert any(
-            "convergence_checker=this%convergence_checker" in line for line in lines
-        )
+        assert any("convergence_checker=" in line for line in lines)
+        assert any("this%convergence_checker" in line for line in lines)
         assert any("n_solutions=this%n_states" in line for line in lines)
         assert not any("transformer = transformer" in line for line in lines)
 
@@ -1201,13 +1308,15 @@ class TestArgListExpansion:
             line for line in lines if line.lstrip().startswith(") result")
         )
         assert close_line == (" " * lines[0].index("compute")) + ") result(out)"
+        out_idx = next(i for i, line in enumerate(lines) if line.strip() == "out = 0.0")
+        assert lines[out_idx - 1] != ""
 
     def test_trailing_comment_on_close_line(self):
         src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
         result = fmt(src, line_length=40)
         lines = result.splitlines()
-        # Comment goes on the closing ) line
-        assert lines[-1].lstrip().startswith(")") and "! important" in lines[-1]
+        # Comment stays on the final argument line where the call closes.
+        assert "long_arg_three)" in lines[-1] and "! important" in lines[-1]
 
     def test_close_suffix_respects_line_length(self):
         src = (
@@ -1263,10 +1372,9 @@ class TestArgListExpansion:
         lines = result.splitlines()
         assert len(lines) > 1
         assert lines[0].startswith("call foo(") and lines[0].endswith(" &")
-        assert any(line.lstrip().startswith("alpha,") for line in lines)
+        assert "alpha," in lines[0]
         assert any(line.lstrip().startswith("beta,") for line in lines)
-        assert any(line.lstrip().startswith("gamma") for line in lines)
-        assert lines[-1] == (" " * lines[0].index("foo")) + ")"
+        assert lines[-1].lstrip().startswith("gamma)")
 
     def test_assignment_lhs_index_list_is_not_exploded(self):
         src = (
@@ -1298,12 +1406,11 @@ class TestArgListExpansion:
         assert "this%references( &" not in result
         assert lines[0].startswith("this%references(1) = citation(")
         assert lines[0].endswith(" &")
-        assert any(line.lstrip().startswith("implementation=") for line in lines)
+        assert "implementation=" in lines[0]
         assert any(line.lstrip().startswith("journal=") for line in lines)
         assert any(line.lstrip().startswith("title_=") for line in lines)
         assert any(line.lstrip().startswith("year=") for line in lines)
-        callee_col = lines[0].index("citation")
-        assert lines[-1] == (" " * callee_col) + ")"
+        assert lines[-1].rstrip().endswith("year='2020')")
 
     def test_rhs_call_explosion_with_lhs_subscript_is_idempotent(self):
         src = (
@@ -1612,13 +1719,13 @@ class TestStringSplittingInArgList:
         )
         result = fmt(src, line_length=60)
         lines = result.splitlines()
-        # Lines for 'a', 'b', and 'c' should all end with ' &' (statement continuation)
-        a_line = next(line for line in lines if line.lstrip().startswith("a,"))
+        # 'a' stays on the opening line; 'b' keeps normal continuation alignment.
+        a_line = lines[0]
         b_line = next(line for line in lines if line.lstrip().startswith("b,"))
-        c_line = next(line for line in lines if line.lstrip().startswith("c"))
+        c_line = next(line for line in lines if line.lstrip().startswith("c)"))
         assert a_line.endswith(" &")
         assert b_line.endswith(" &")
-        assert c_line.endswith(" &")
+        assert c_line.endswith(")")
 
     def test_long_string_single_arg_closing_paren_uses_callee_indent(self):
         src = (
@@ -1831,6 +1938,18 @@ class TestColonSpacing:
     def test_array_slice_step(self):
         result = fmt("x = a(1:n:2)")
         assert "1:n:2" in result
+
+    def test_exploded_arg_index_range_has_no_space_after_colon(self):
+        src = (
+            "call foo("
+            "1: A_range%length, 1: B_range%length, 1: A_range%length, "
+            "1: B_range%length)\n"
+        )
+        result = fmt(src, line_length=45)
+        assert "1:A_range%length" in result
+        assert "1:B_range%length" in result
+        assert "1: A_range%length" not in result
+        assert "1: B_range%length" not in result
 
     def test_use_only_colon_idempotent(self):
         source = "use module_name, only: routine_name\n"

@@ -299,7 +299,34 @@ def _needs_space_before(
         return False
     # Space after ':' only at the top level (USE only:, construct labels, …).
     # Inside parens/brackets ':' is a slice/subscript operator — no space.
+    # Also treat top-level index-range forms like ``1:n`` (which can appear when
+    # an argument is rendered on its own physical line) as slice syntax.
     if pk == TokenKind.COLON:
+        if (
+            paren_depth == 0
+            and prev_prev is not None
+            and prev_prev.kind
+            in {
+                TokenKind.NAME,
+                TokenKind.INTEGER,
+                TokenKind.REAL,
+                TokenKind.RPAREN,
+                TokenKind.RBRACKET,
+            }
+            and ck
+            in {
+                TokenKind.NAME,
+                TokenKind.INTEGER,
+                TokenKind.REAL,
+                TokenKind.LPAREN,
+                TokenKind.OP_PLUS,
+                TokenKind.OP_MINUS,
+            }
+            and not (
+                prev_prev.kind == TokenKind.NAME and prev_prev.text.lower() == "only"
+            )
+        ):
+            return False
         return paren_depth == 0
 
     # Default: space between distinct tokens
@@ -982,10 +1009,11 @@ def _try_split_single_entity_pointer_declaration(
         return None
 
     step = cfg.indent_width if continuation_step is None else continuation_step
-    continuation_indent = indent + " " * step
+    fallback_continuation_indent = indent + " " * step
     comment_str = ("  " + comment.text) if comment else ""
     arrow_tok = _make_token(TokenKind.OP_ARROW, "=>", anchor)
     header_tokens = prefix_tokens + [_make_token(TokenKind.DOUBLE_COLON, "::", anchor)]
+    continuation_indent = " " * len(indent + _render_tokens(header_tokens) + " ")
     lhs_tokens = entity[:arrow_idx]
     rhs_tokens = entity[arrow_idx + 1 :]
 
@@ -1019,12 +1047,14 @@ def _try_split_single_entity_pointer_declaration(
     #      lhs => &
     #      rhs
     header_line = indent + _render_tokens(header_tokens) + " &"
-    lhs_line = continuation_indent + _render_tokens(lhs_tokens + [arrow_tok]) + " &"
+    lhs_line = (
+        fallback_continuation_indent + _render_tokens(lhs_tokens + [arrow_tok]) + " &"
+    )
     if len(header_line) > cfg.line_length or len(lhs_line) > cfg.line_length:
         return None
     rhs_lines = render_logical_line(
         rhs_tokens,
-        continuation_indent,
+        fallback_continuation_indent,
         cfg,
         continuation_step=continuation_step,
     )
@@ -1043,8 +1073,6 @@ def _try_wrap_declaration_entity_list(
     if len(decl.entities) <= 1:
         return None
 
-    step = cfg.indent_width if continuation_step is None else continuation_step
-    continuation_indent = indent + " " * (step * 2)
     comment_str = ("  " + comment.text) if comment else ""
 
     header_tokens = decl.prefix_tokens + [
@@ -1053,12 +1081,16 @@ def _try_wrap_declaration_entity_list(
     header = indent + _render_tokens(header_tokens)
     rendered_entities = [_render_tokens(entity) for entity in decl.entities]
     first_prefix = header + " "
+    continuation_indent = " " * len(first_prefix)
     n = len(rendered_entities)
     idx = 0
     lines: list[str] = []
+    header_emitted = False
 
     while idx < n:
-        prefix = first_prefix if idx == 0 else continuation_indent
+        prefix = (
+            first_prefix if idx == 0 and not header_emitted else continuation_indent
+        )
         prefix_len = len(prefix)
         start_idx = idx
         line_entities: list[str] = []
@@ -1082,11 +1114,12 @@ def _try_wrap_declaration_entity_list(
             break
 
         if not line_entities:
-            if idx == 0:
+            if idx == 0 and not header_emitted:
                 header_line = header + " &"
                 if len(header_line) > cfg.line_length:
                     return None
                 lines.append(header_line)
+                header_emitted = True
                 continue
             return None
 
@@ -1955,18 +1988,38 @@ def _try_expand_arg_list(
     inner = body[open_idx + 1 : close_idx]
 
     close_indent = _arg_list_anchor_indent(body, open_idx, indent)
-    continuation_indent = close_indent + " " * cfg.indent_width
-    arg_continuation_indent = continuation_indent + " " * cfg.indent_width
     arg_groups = _split_at_top_commas(inner)
 
     # Build content strings for every physical line that will carry a ' &'.
-    #   - the opening line: prefix + (
-    #   - each argument: one line if it fits, or greedy-split into several lines
-    # The closing ) goes on its own line aligned with the callee start.
+    # Prefer placing the first argument on the opening line (``foo(arg1, &``)
+    # and, when possible, the closing ``)`` on the final argument line.
     prefix_with_open = _render_tokens(body[: open_idx + 1])
-    content_lines: list[str] = [indent + prefix_with_open]
+    close_tail_tokens = body[close_idx + 1 :]
+    can_hang_open_and_close = len(arg_groups) >= 2 and not close_tail_tokens
+    first_arg_column_indent = " " * (len(indent) + len(prefix_with_open))
+    default_continuation_indent = close_indent + " " * cfg.indent_width
 
-    for i, arg_toks in enumerate(arg_groups):
+    content_lines: list[str] = [indent + prefix_with_open]
+    start_arg_idx = 0
+    if can_hang_open_and_close:
+        first_suffix = ","
+        first_inline = (
+            _render_tokens(arg_groups[0], compact_named_assign=True) + first_suffix
+        )
+        first_line = content_lines[0] + first_inline
+        if len(first_line) + 2 <= cfg.line_length:
+            content_lines[0] = first_line
+            start_arg_idx = 1
+
+    continuation_indent = (
+        first_arg_column_indent
+        if can_hang_open_and_close and start_arg_idx == 1
+        else default_continuation_indent
+    )
+    arg_continuation_indent = continuation_indent + " " * cfg.indent_width
+
+    for i in range(start_arg_idx, len(arg_groups)):
+        arg_toks = arg_groups[i]
         is_last = i == len(arg_groups) - 1
         suffix = "" if is_last else ","
 
@@ -2024,12 +2077,25 @@ def _try_expand_arg_list(
     # in-string continuation lines: they must NOT receive an additional statement
     # "&" (invalid Fortran).
     lines: list[str] = []
-    for content in content_lines:
+    inline_close = can_hang_open_and_close and start_arg_idx == 1
+    if inline_close and content_lines:
+        content_lines[-1] = content_lines[-1] + ")"
+        if comment is not None:
+            content_lines[-1] = content_lines[-1] + "  " + comment.text
+
+    for idx, content in enumerate(content_lines):
+        is_last_content = idx == len(content_lines) - 1
+        if inline_close and is_last_content:
+            lines.append(content)
+            continue
         if content.endswith("&"):
             # In-string continuation: emit without adding a statement &
             lines.append(content)
         else:
             lines.append(content + " &")
+
+    if inline_close:
+        return lines
 
     # Closing line(s): start with ')' at the callee anchor, then any suffix tokens
     # (e.g. result(r) or chained expressions). Reuse the normal line renderer so
@@ -2321,12 +2387,12 @@ def render_logical_line(
             if wrapped_decl is not None:
                 return wrapped_decl
 
-            step = cfg.indent_width if continuation_step is None else continuation_step
-            continuation_indent = indent + " " * step
             header_tokens = decl.prefix_tokens + [
                 _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
             ]
-            lines = [indent + _render_tokens(header_tokens) + " &"]
+            header = indent + _render_tokens(header_tokens)
+            continuation_indent = " " * len(header + " ")
+            lines = [header + " &"]
 
             for i, entity in enumerate(decl.entities):
                 is_last = i == len(decl.entities) - 1
@@ -2648,6 +2714,96 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
             and line_tokens[0].text.startswith("!$")
         )
 
+    def _is_exploded_call_render(
+        tokens_line: list[Token],
+        rendered: list[str],
+        current_indent: str,
+        prefer_exploded_arg_list: bool,
+    ) -> bool:
+        """True when *tokens_line* was rendered via arg-list explosion for CALL."""
+        non_comment_tokens = [t for t in tokens_line if t.kind != TokenKind.COMMENT]
+        if (
+            not non_comment_tokens
+            or non_comment_tokens[0].kind != TokenKind.KEYWORD
+            or non_comment_tokens[0].text.lower() != "call"
+        ):
+            return False
+
+        comment: Token | None = None
+        body = tokens_line
+        if body and body[-1].kind == TokenKind.COMMENT:
+            comment = body[-1]
+            body = body[:-1]
+            if re.fullmatch(r"!\s*", comment.text):
+                comment = None
+
+        force_trailing_continuation = False
+        while body and body[-1].kind == TokenKind.CONTINUATION:
+            force_trailing_continuation = True
+            body = body[:-1]
+        while body and body[0].kind == TokenKind.CONTINUATION:
+            body = body[1:]
+        body = [tok for tok in body if tok.kind != TokenKind.CONTINUATION]
+
+        line_body = _render_tokens(body)
+        comment_str = ("  " + comment.text) if comment else ""
+        trailing = " &" if force_trailing_continuation else ""
+        full_line = current_indent + line_body + trailing + comment_str
+        if not prefer_exploded_arg_list and len(full_line) <= cfg.line_length:
+            return False
+
+        expanded = _try_expand_arg_list(body, comment, current_indent, cfg)
+        if expanded is None:
+            return False
+        if force_trailing_continuation and expanded:
+            expanded[-1] = expanded[-1] + " &"
+        if not all(len(line) <= cfg.line_length for line in expanded):
+            return False
+        return rendered == expanded
+
+    def _is_continued_math_expression_render(
+        tokens_line: list[Token],
+        rendered: list[str],
+        current_indent: str,
+    ) -> bool:
+        """True when *tokens_line* is a wrapped arithmetic assignment expression."""
+        if len(rendered) <= 1:
+            return False
+
+        non_comment_tokens = [t for t in tokens_line if t.kind != TokenKind.COMMENT]
+        if not non_comment_tokens:
+            return False
+
+        body = non_comment_tokens
+        while body and body[-1].kind == TokenKind.CONTINUATION:
+            body = body[:-1]
+        while body and body[0].kind == TokenKind.CONTINUATION:
+            body = body[1:]
+        body = [tok for tok in body if tok.kind != TokenKind.CONTINUATION]
+        if not body:
+            return False
+
+        line_text = current_indent + _render_tokens(body)
+        if len(line_text) <= cfg.line_length:
+            return False
+
+        assign_idx = next(
+            (i for i, tok in enumerate(body) if tok.kind == TokenKind.OP_ASSIGN),
+            None,
+        )
+        if assign_idx is None:
+            return False
+
+        rhs_tokens = body[assign_idx + 1 :]
+        arithmetic_ops = {
+            TokenKind.OP_PLUS,
+            TokenKind.OP_MINUS,
+            TokenKind.OP_STAR,
+            TokenKind.OP_SLASH,
+            TokenKind.OP_POWER,
+        }
+        return any(tok.kind in arithmetic_ops for tok in rhs_tokens)
+
     for logical_line in iter_logical_lines(tokens):
         if logical_line:
             start_line = min(tok.line for tok in logical_line)
@@ -2785,7 +2941,21 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
                 continuation_step=continuation_step,
                 prefer_exploded_arg_list=prefer_exploded,
             )
+            exploded_call = _is_exploded_call_render(
+                normalised, physical, indent, prefer_exploded
+            )
+            continued_math_expression = _is_continued_math_expression_render(
+                normalised, physical, indent
+            )
+            needs_expression_spacing = exploded_call or continued_math_expression
+            if needs_expression_spacing and output_lines and output_lines[-1] != "":
+                output_lines.append("")
             output_lines.extend(physical)
+            source_has_blank_after = (
+                end_line < len(raw_lines) and raw_lines[end_line].strip() == ""
+            )
+            if needs_expression_spacing and not source_has_blank_after:
+                output_lines.append("")
 
         if _has_explicit_trailing_continuation(normalised):
             if used_chain_indent:
