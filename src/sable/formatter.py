@@ -776,6 +776,39 @@ _LOW_PRECEDENCE_SPLIT_OPS: frozenset[TokenKind] = frozenset(
 )
 """Operators preferred as line-break boundaries after commas/assignment."""
 
+_LOGICAL_SPLIT_OPS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_OR,
+        TokenKind.OP_AND,
+        TokenKind.OP_EQV,
+        TokenKind.OP_NEQV,
+    }
+)
+"""Low-precedence logical operators that stay at line end on split."""
+
+_ADDITIVE_SPLIT_OPS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_PLUS,
+        TokenKind.OP_MINUS,
+    }
+)
+"""Arithmetic operators that should start continued expression lines."""
+
+_MULTIPLICATIVE_SPLIT_OPS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_STAR,
+    }
+)
+"""Multiplicative operators that may start continued expression lines."""
+
+_NONLOGICAL_TRAILING_SPLIT_OPS: frozenset[TokenKind] = frozenset(
+    {
+        TokenKind.OP_SLASH,
+        TokenKind.OP_CONCAT,
+    }
+)
+"""Non-logical split operators preferred at line end when they fit."""
+
 
 _DECL_TYPE_KEYWORDS: frozenset[str] = frozenset(
     {
@@ -1780,9 +1813,22 @@ def _pick_split_index(
     start_depth: int,
     compact_named_assign: bool = False,
 ) -> int:
-    """Pick a split boundary using precedence: comma > '=' > low-precedence ops."""
+    """Pick a split boundary by precedence.
+
+    Preference:
+      1. top-level commas,
+      2. top-level assignment (`=`),
+      3. boundary before binary `+`/`-`,
+      4. boundary before `*`,
+      5. other low-precedence operators.
+    """
     if not tokens:
         return 0
+
+    declaration_marker_idx = next(
+        (i for i, tok in enumerate(tokens) if tok.kind == TokenKind.DOUBLE_COLON),
+        None,
+    )
 
     def _is_unary_sign(token_idx: int) -> bool:
         if token_idx < 0 or token_idx >= len(tokens):
@@ -1873,14 +1919,21 @@ def _pick_split_index(
         unique_depths = sorted(set(boundary_depths))
         best_boundary: int | None = None
         for target_depth in unique_depths:
-            priorities: list[list[int]] = [[], [], [], []]
+            priorities: list[list[int]] = [[], [], [], [], [], []]
             for boundary in range(1, fit_upto + 1):
                 left = tokens[boundary - 1]
                 right = tokens[boundary] if boundary < len(tokens) else None
                 boundary_depth = depth_after[boundary - 1]
                 same_depth = boundary_depth == target_depth
 
-                if left.kind == TokenKind.COMMA and same_depth:
+                if (
+                    left.kind == TokenKind.COMMA
+                    and same_depth
+                    and not (
+                        declaration_marker_idx is not None
+                        and boundary <= declaration_marker_idx
+                    )
+                ):
                     priorities[0].append(boundary)
                 elif (
                     left.kind == TokenKind.OP_ASSIGN
@@ -1892,16 +1945,29 @@ def _pick_split_index(
                     )
                 ):
                     priorities[1].append(boundary)
+                elif (
+                    same_depth
+                    and right is not None
+                    and right.kind in _ADDITIVE_SPLIT_OPS
+                ):
+                    if not _is_unary_sign(boundary):
+                        priorities[2].append(boundary)
+                elif (
+                    same_depth
+                    and right is not None
+                    and right.kind in _MULTIPLICATIVE_SPLIT_OPS
+                ):
+                    priorities[3].append(boundary)
                 elif same_depth and left.kind in _LOW_PRECEDENCE_SPLIT_OPS:
                     if not _is_unary_sign(boundary - 1):
-                        priorities[2].append(boundary)
+                        priorities[4].append(boundary)
                 elif (
                     same_depth
                     and right is not None
                     and right.kind in _LOW_PRECEDENCE_SPLIT_OPS
                 ):
                     if not _is_unary_sign(boundary):
-                        priorities[3].append(boundary)
+                        priorities[5].append(boundary)
 
             # For a leading designator/function-like prefix `name(...)`, avoid
             # splitting inside that first parenthesised segment when there are
@@ -1920,19 +1986,45 @@ def _pick_split_index(
 
         split_at = best_boundary if best_boundary is not None else fit_upto
 
-    # If we still chose a split inside a protected leading designator segment,
-    # move the split right after the closing ')' when possible.
+    # If we still chose a split inside/before a protected leading designator
+    # segment, move the split to a better boundary after the closing ')' when
+    # possible.
     if (
         protected_end is not None
         and split_at <= protected_end
         and protected_end < fit_upto
     ):
-        split_at = protected_end + 1
+        outer_depth = depth_after[protected_end]
+        preferred_after: int | None = None
+        for boundary in range(fit_upto, protected_end, -1):
+            if depth_after[boundary - 1] != outer_depth:
+                continue
+            right = tokens[boundary] if boundary < len(tokens) else None
+            if right is None:
+                continue
+            if right.kind in _ADDITIVE_SPLIT_OPS and not _is_unary_sign(boundary):
+                preferred_after = boundary
+                break
 
-    # Keep low-precedence operators at line end when they fit. This avoids
-    # continuation lines that start with `.or.` / `.and.`.
+        split_at = preferred_after if preferred_after is not None else protected_end + 1
+
+    # Prefer leading arithmetic operators on continuation lines (`+ term`, `- term`)
+    # for readability in wrapped expression chains.
+    if (
+        split_at > 1
+        and tokens[split_at - 1].kind in _ADDITIVE_SPLIT_OPS
+        and not _is_unary_sign(split_at - 1)
+    ):
+        split_at -= 1
+
+    # Keep logical operators at line end when they fit to avoid continuation
+    # lines that start with `.or.` / `.and.`.
     if split_at < fit_upto and tokens[split_at].kind in _LOW_PRECEDENCE_SPLIT_OPS:
-        split_at += 1
+        next_kind = tokens[split_at].kind
+        if next_kind in _LOGICAL_SPLIT_OPS:
+            split_at += 1
+        elif next_kind in _NONLOGICAL_TRAILING_SPLIT_OPS:
+            split_at += 1
 
     adjusted = _avoid_percent_split(tokens, split_at)
     split_at = adjusted if adjusted > 0 else split_at
@@ -2125,17 +2217,19 @@ def _try_expand_arg_list(
 
     # Build content strings for every physical line that will carry a ' &'.
     # Prefer placing the first argument on the opening line (``foo(arg1, &``)
-    # and, when possible, the closing ``)`` on the final argument line.
+    # and, when possible, the closing ``)`` (plus suffix like ``result(r)``)
+    # on the final argument line.
     prefix_with_open = _render_tokens(code_body[: open_idx + 1])
     close_tail_tokens = code_body[close_idx + 1 :]
-    can_hang_open_and_close = len(arg_groups) >= 2 and not close_tail_tokens
+    close_piece = _render_tokens([code_body[close_idx]] + close_tail_tokens)
+    can_hang_open = len(arg_groups) >= 2
     first_arg_column_indent = " " * (len(indent) + len(prefix_with_open))
     default_continuation_indent = close_indent + " " * cfg.indent_width
 
     content_lines: list[str] = [indent + prefix_with_open]
     content_comments: list[str] = [_comment_suffix(open_line_comments)]
     start_arg_idx = 0
-    if can_hang_open_and_close:
+    if can_hang_open:
         first_suffix = ","
         first_inline = (
             _render_tokens(arg_groups[0], compact_named_assign=True) + first_suffix
@@ -2149,7 +2243,7 @@ def _try_expand_arg_list(
 
     continuation_indent = (
         first_arg_column_indent
-        if can_hang_open_and_close and start_arg_idx == 1
+        if can_hang_open and start_arg_idx == 1
         else default_continuation_indent
     )
     arg_continuation_indent = continuation_indent + " " * cfg.indent_width
@@ -2223,12 +2317,15 @@ def _try_expand_arg_list(
     # in-string continuation lines: they must NOT receive an additional statement
     # "&" (invalid Fortran).
     lines: list[str] = []
-    inline_close = can_hang_open_and_close and start_arg_idx == 1
-    if inline_close and content_lines:
-        content_lines[-1] = content_lines[-1] + ")"
-        content_comments[-1] = content_comments[-1] + _comment_suffix(
-            close_line_comments
-        )
+    inline_close = False
+    if start_arg_idx == 1 and content_lines:
+        close_comment_suffix = _comment_suffix(close_line_comments)
+        inline_candidate = content_lines[-1] + close_piece
+        inline_comment = content_comments[-1] + close_comment_suffix
+        if len(inline_candidate) + len(inline_comment) <= cfg.line_length:
+            inline_close = True
+            content_lines[-1] = inline_candidate
+            content_comments[-1] = inline_comment
 
     for idx, content in enumerate(content_lines):
         is_last_content = idx == len(content_lines) - 1
@@ -2443,23 +2540,48 @@ def _assignment_rhs_chain_continuation_indent(
     if assignment_idx is None or assignment_idx >= len(body) - 1:
         return default_indent
 
+    # Declaration initializers (`type, attr :: var = ...`) should keep normal
+    # continuation indent; aligning under RHS start over-indents heavily.
+    declaration_marker_idx = next(
+        (i for i, tok in enumerate(body) if tok.kind == TokenKind.DOUBLE_COLON),
+        None,
+    )
+    if declaration_marker_idx is not None and declaration_marker_idx < assignment_idx:
+        return default_indent
+
     depth = 0
-    has_logical_chain = False
+    has_chain_operator = False
+    saw_rhs_value = False
+    chain_ops = {
+        TokenKind.OP_OR,
+        TokenKind.OP_AND,
+        TokenKind.OP_EQV,
+        TokenKind.OP_NEQV,
+        TokenKind.OP_PLUS,
+        TokenKind.OP_MINUS,
+        TokenKind.OP_STAR,
+        TokenKind.OP_SLASH,
+        TokenKind.OP_POWER,
+    }
     for tok in body[assignment_idx + 1 :]:
         if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
             depth += 1
+            saw_rhs_value = True
         elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
             depth = max(0, depth - 1)
-        elif depth == 0 and tok.kind in (
-            TokenKind.OP_OR,
-            TokenKind.OP_AND,
-            TokenKind.OP_EQV,
-            TokenKind.OP_NEQV,
-        ):
-            has_logical_chain = True
+        elif depth == 0 and tok.kind in chain_ops:
+            # Treat leading unary +/- as part of the first RHS value.
+            if (
+                tok.kind in (TokenKind.OP_PLUS, TokenKind.OP_MINUS)
+                and not saw_rhs_value
+            ):
+                continue
+            has_chain_operator = True
             break
+        elif tok.kind != TokenKind.COMMENT:
+            saw_rhs_value = True
 
-    if not has_logical_chain:
+    if not has_chain_operator:
         return default_indent
 
     # Align to first RHS token after "lhs = ".

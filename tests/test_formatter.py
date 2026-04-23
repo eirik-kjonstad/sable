@@ -223,6 +223,20 @@ class TestDeclarationCanonicalization:
         assert "dimension(:, : &" not in result
         assert "), allocatable :: basis_shell_info" in result
 
+    def test_single_entity_initializer_declaration_keeps_prefix_together(self):
+        src = (
+            "real(dp), parameter :: au_to_cgs_R        = (elementary_charge * "
+            "elementary_charge * hbar &\n"
+            "                                             * bohr_to_angstrom * "
+            "speed_of_light * 1.0D36) &\n"
+            "                                             / electron_mass\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert lines[0].startswith("real(dp), parameter :: au_to_cgs_R =")
+        assert not lines[0].startswith("real(dp), &")
+        assert all((len(line) - len(line.lstrip())) <= 3 for line in lines[1:])
+
     def test_single_entity_procedure_pointer_prefers_arrow_split(self):
         src = (
             "procedure, public :: calculate_polarizability => "
@@ -1238,10 +1252,10 @@ class TestContinuedMathExpressionSpacing:
         expr_start_idx = next(
             i for i, line in enumerate(lines) if "tmp_pt_mu(pt_grid, mu) =" in line
         )
-        expr_end_idx = next(
-            i for i, line in enumerate(lines) if "wf%d1_chi_mu_at_point" in line
-        )
         end_do_idx = next(i for i, line in enumerate(lines) if line.strip() == "end do")
+        expr_end_idx = end_do_idx - 2
+        while expr_end_idx >= 0 and lines[expr_end_idx].strip() == "":
+            expr_end_idx -= 1
         assert expr_start_idx - do_idx == 2
         assert lines[expr_start_idx - 1] == ""
         assert end_do_idx - expr_end_idx == 2
@@ -1396,13 +1410,32 @@ class TestArgListExpansion:
         result = fmt(src, line_length=60)
         lines = result.splitlines()
         assert lines[0].startswith("function compute(") and lines[0].endswith(" &")
-        # Closing ) with result clause aligned to the procedure name.
-        close_line = next(
-            line for line in lines if line.lstrip().startswith(") result")
-        )
-        assert close_line == (" " * lines[0].index("compute")) + ") result(out)"
+        assert "alpha_in," in lines[0]
+        assert any(line.lstrip().startswith("delta_in) result(out)") for line in lines)
+        assert not any(line.lstrip().startswith(") result") for line in lines)
         out_idx = next(i for i, line in enumerate(lines) if line.strip() == "out = 0.0")
         assert lines[out_idx - 1] != ""
+
+    def test_multiline_function_header_uses_subroutine_style_parameter_split(self):
+        src = (
+            "function new_newton_raphson_updater( &\n"
+            "            n_amplitudes, &\n"
+            "            scale_amplitudes, &\n"
+            "            scale_residual, &\n"
+            "            relative_threshold, &\n"
+            "            records_in_memory, &\n"
+            "            max_iterations, &\n"
+            "            transformer &\n"
+            "         ) result(this)\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert lines[0].startswith("function new_newton_raphson_updater(")
+        assert "n_amplitudes, &" in lines[0]
+        assert any(
+            line.lstrip().startswith("transformer) result(this)") for line in lines[1:]
+        )
+        assert not any(line.lstrip().startswith(") result(this)") for line in lines)
 
     def test_trailing_comment_on_close_line(self):
         src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
@@ -1482,8 +1515,8 @@ class TestArgListExpansion:
         # RHS should still split at assignment/operator boundaries when long.
         assert lines[0].rstrip().endswith("= &")
         assert any(
-            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
-            for line in lines[1:-1]
+            line.lstrip().startswith("+ ") or line.lstrip().startswith("- ")
+            for line in lines[1:]
         )
 
     def test_rhs_call_explodes_when_lhs_has_subscript_parens(self):
@@ -1953,6 +1986,18 @@ class TestLineBreakPriority:
         assert len(lines) > 1
         assert lines[0].rstrip().endswith("= &")
 
+    def test_arithmetic_assignment_chain_aligns_with_rhs_start(self):
+        src = (
+            "embedding%energy = constant_energy + "
+            "ddot(embedding%n_ao**2, embedding%D, 1, embedding%h, 1) + "
+            "half * ddot(embedding%n_ao**2, embedding%D, 1, embedding%F, 1)\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        rhs_col = lines[0].index("constant_energy")
+        assert lines[1].startswith(" " * rhs_col + "+ half * ddot(")
+
     def test_assignment_split_skips_unary_minus_rhs_start(self):
         src = "alpha_Im = -half * (alpha + beta + gamma + delta + epsilon)\n"
         result = fmt(src, line_length=28)
@@ -1967,9 +2012,54 @@ class TestLineBreakPriority:
         result = fmt(src, line_length=44)
         lines = result.splitlines()
         assert len(lines) > 1
-        assert any(
-            line.rstrip().endswith("+ &") or line.rstrip().endswith(".and. &")
+        assert any(line.lstrip().startswith("+ ") for line in lines[1:])
+        assert not any(
+            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
             for line in lines[:-1]
+        )
+
+    def test_wrapped_additive_assignment_never_ends_line_with_plus_minus(self):
+        src = (
+            "eps = wf%orbital_energies(i) + wf%orbital_energies(j) - "
+            "wf%orbital_energies(wf%n_o + a) - wf%orbital_energies(wf%n_o + b)\n"
+        )
+        result = fmt(src, line_length=88)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert not any(
+            line.rstrip().endswith("+ &") or line.rstrip().endswith("- &")
+            for line in lines[:-1]
+        )
+        assert any(
+            line.lstrip().startswith("+ ") or line.lstrip().startswith("- ")
+            for line in lines[1:]
+        )
+
+    def test_split_prefers_before_plus_over_splitting_division(self):
+        src = (
+            "wf%n_triplet_amplitudes = wf%n_t1 + wf%n_t1 * (wf%n_t1 - 1) / "
+            "2 + (wf%n_o * (wf%n_o - 1) / 2) * (wf%n_v * (wf%n_v - 1) / 2)\n"
+        )
+        result = fmt(src, line_length=90)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert lines[0].rstrip().endswith("/ 2 &")
+        assert not lines[0].rstrip().endswith("/ &")
+        assert lines[1].lstrip().startswith("+ ")
+
+    def test_split_prefers_before_star_over_inside_call_arguments(self):
+        src = (
+            "max_memory_usage = req0_tot + req1_p_min * int(batch_p%max_length, "
+            "kind = i64) + req1_q_min * int(batch_q%max_length, kind = i64) + "
+            "req2_min * int(batch_q%max_length, kind = i64) * "
+            "int(batch_q%max_length, kind = i64)\n"
+        )
+        result = fmt(src, line_length=88)
+        assert "int(batch_q%max_length, &\n" not in result
+        lines = result.splitlines()
+        assert any(
+            line.lstrip().startswith("* int(batch_q%max_length, kind = i64)")
+            for line in lines
         )
 
     def test_logical_chain_prefers_break_after_operator(self):
