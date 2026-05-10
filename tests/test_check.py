@@ -193,6 +193,291 @@ def test_check_allows_valid_string_continuation_with_exclamation_mark(tmp_path):
     assert result.output == ""
 
 
+def test_check_reports_unused_use_only_import(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: dp, unused_kind\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(src)])
+
+    assert result.exit_code == 1
+    assert "SBL201" in result.output
+    assert "unused_kind" in result.output
+    assert "dp" not in result.output
+
+
+def test_check_fix_keeps_unused_use_only_import_without_unsafe(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: dp, unused_kind\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--fix", "--select", "SBL201", str(src)])
+
+    assert result.exit_code == 1
+    assert "unused_kind" in src.read_text(encoding="utf-8")
+
+
+def test_check_unsafe_fix_removes_unused_use_only_import_item(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: dp, unused_kind, wp\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "   real(wp) :: y\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL201", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert src.read_text(encoding="utf-8") == (
+        "module example\n"
+        "   use constants, only: dp, wp\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "   real(wp) :: y\n"
+        "end module example\n"
+    )
+
+
+def test_check_unsafe_fix_removes_adjacent_unused_use_only_import_items(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: unused_a, unused_b, dp\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL201", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert src.read_text(encoding="utf-8") == (
+        "module example\n"
+        "   use constants, only: dp\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "end module example\n"
+    )
+
+
+def test_check_unsafe_fix_removes_adjacent_middle_use_only_import_items(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: dp, unused_a, unused_b, wp\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "   real(wp) :: y\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL201", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert src.read_text(encoding="utf-8") == (
+        "module example\n"
+        "   use constants, only: dp, wp\n"
+        "   implicit none\n"
+        "   real(dp) :: x\n"
+        "   real(wp) :: y\n"
+        "end module example\n"
+    )
+
+
+def test_check_unsafe_fix_removes_unused_use_only_import_statement(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: unused_kind\n"
+        "   implicit none\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL201", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert src.read_text(encoding="utf-8") == (
+        "module example\n" "   implicit none\n" "end module example\n"
+    )
+
+
+def test_check_allows_renamed_use_only_import_when_local_name_is_used(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use constants, only: wp => working_precision\n"
+        "   implicit none\n"
+        "   real(wp) :: x\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_use_only_import_used_in_extends(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use base_class, only: base_type\n"
+        "   implicit none\n"
+        "   type, extends(base_type) :: derived_type\n"
+        "   end type derived_type\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_use_only_import_used_as_binding_interface(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "module example\n"
+        "   use interfaces, only: execute\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure(execute), deferred :: run\n"
+        "   end type worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_use_only_import_used_in_openmp_sentinel(tmp_path):
+    src = tmp_path / "example.f90"
+    src.write_text(
+        "subroutine example()\n"
+        "   use omp_lib, only: omp_get_thread_num\n"
+        "   implicit none\n"
+        "   integer :: i_thread\n"
+        "   i_thread = 1\n"
+        "   !$ i_thread = omp_get_thread_num() + 1\n"
+        "end subroutine example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_use_only_import_used_by_submodule(tmp_path):
+    parent = tmp_path / "parent.F90"
+    child = tmp_path / "child.F90"
+    parent.write_text(
+        "module parent_module\n"
+        "   use timings_class, only: timings\n"
+        "   implicit none\n"
+        "   interface\n"
+        "      module subroutine run()\n"
+        "      end subroutine run\n"
+        "   end interface\n"
+        "end module parent_module\n",
+        encoding="utf-8",
+    )
+    child.write_text(
+        "submodule (parent_module) child_module\n"
+        "   implicit none\n"
+        "contains\n"
+        "   module procedure run\n"
+        "      type(timings) :: timer\n"
+        "   end procedure run\n"
+        "end submodule child_module\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_use_only_import_reexported_to_another_module(tmp_path):
+    provider = tmp_path / "provider.F90"
+    forwarded = tmp_path / "forwarded.F90"
+    consumer = tmp_path / "consumer.F90"
+    provider.write_text(
+        "module provider\n"
+        "   implicit none\n"
+        "   integer, parameter :: exported_kind = 4\n"
+        "end module provider\n",
+        encoding="utf-8",
+    )
+    forwarded.write_text(
+        "module forwarded\n"
+        "   use provider, only: exported_kind\n"
+        "   implicit none\n"
+        "end module forwarded\n",
+        encoding="utf-8",
+    )
+    consumer.write_text(
+        "module consumer\n"
+        "   use forwarded, only: exported_kind\n"
+        "   implicit none\n"
+        "   real(exported_kind) :: x\n"
+        "end module consumer\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL201", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
 def test_check_json_output(tmp_path):
     src = tmp_path / "example.f90"
     src.write_text("if (A .EQ. B) then\nend if\n", encoding="utf-8")

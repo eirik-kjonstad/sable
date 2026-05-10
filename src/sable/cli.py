@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # Python 3.10
 
 from . import __version__
 from .baseline import diagnostic_key, load_baseline, write_baseline
-from .checker import apply_fixes, check_source
+from .checker import apply_fixes, check_source, collect_external_references
 from .formatter import DEFAULT_CONFIG, FormatConfig, format_source
 from .outputs import (
     render_diagnostics_gitlab_codequality,
@@ -406,6 +406,8 @@ def _run_check(
         click.echo(f"{SYM_ERR} {_fmt_label(str(path))}: {exc}", err=True)
         n_errors += 1
 
+    external_references = collect_external_references(sources)
+
     for source, path in sources:
         label = str(path) if path else "<stdin>"
         try:
@@ -416,6 +418,7 @@ def _run_check(
                 select=set(select) if select else None,
                 ignore=set(ignore) if ignore else None,
                 rule_set=rule_set,
+                external_references=external_references,
             )
             if fix:
                 fixed, _n_applied = apply_fixes(
@@ -435,6 +438,7 @@ def _run_check(
                     select=set(select) if select else None,
                     ignore=set(ignore) if ignore else None,
                     rule_set=rule_set,
+                    external_references=external_references,
                 )
             diagnostics.extend(file_diagnostics)
             source_lookup[label] = source

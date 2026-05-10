@@ -102,6 +102,7 @@ Current lint rules:
 - `SBL101`: Program/module is missing `implicit none`
 - `SBL102`: Procedure is missing `implicit none`
 - `SBL103`: Dummy argument is missing `intent(in|out|inout)`
+- `SBL201`: Name imported with `use ..., only:` is unused
 
 ## Suppressions
 

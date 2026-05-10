@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .analysis import analyze_file
 from .diagnostics import Diagnostic, FixSafety, RuleContext, TextEdit
 from .formatter import FormatConfig
 from .lexer import iter_logical_lines, tokenize
@@ -60,10 +61,12 @@ def check_source(
     select: set[str] | None = None,
     ignore: set[str] | None = None,
     rule_set: str = "all",
+    external_references: dict[str, set[str]] | None = None,
 ) -> list[Diagnostic]:
     """Run enabled checks on *source* and return diagnostics."""
     tokens = tokenize(source)
     logical_lines = list(iter_logical_lines(tokens))
+    analysis = analyze_file(source, tokens, logical_lines, path)
     line_starts = [0]
     for i, ch in enumerate(source):
         if ch == "\n":
@@ -75,6 +78,8 @@ def check_source(
         line_starts=tuple(line_starts),
         cfg=cfg,
         path=path,
+        analysis=analysis,
+        external_references=external_references,
     )
 
     selected = _normalise_rule_ids(select)
@@ -91,6 +96,46 @@ def check_source(
     ]
     diagnostics.sort(key=lambda d: (str(d.path or ""), d.line, d.col, d.rule_id))
     return diagnostics
+
+
+def collect_external_references(
+    sources: list[tuple[str, Path | None]],
+) -> dict[str, set[str]]:
+    """Collect project-level references that module-scope checks must consider.
+
+    Submodules can use names imported by their parent module through host
+    association. File-local unused-import checks therefore need a project-level
+    hint before judging parent-module imports.
+
+    A module can also re-export public names that it imported from another
+    module. If another source imports that name through the forwarding module,
+    the forwarding module's import is semantically used even when the name is
+    never referenced in its own executable statements.
+    """
+    references_by_host: dict[str, set[str]] = {}
+
+    for source, path in sources:
+        tokens = tokenize(source)
+        logical_lines = list(iter_logical_lines(tokens))
+        analysis = analyze_file(source, tokens, logical_lines, path)
+
+        for imported in analysis.use_imports:
+            references_by_host.setdefault(imported.module, set()).add(imported.name)
+
+        for scope in analysis.scopes:
+            if scope.kind != "submodule" or scope.host_name is None:
+                continue
+            names = references_by_host.setdefault(scope.host_name, set())
+            for ref in analysis.references:
+                idx = ref.scope
+                while idx is not None:
+                    ref_scope = analysis.scopes[idx]
+                    if ref_scope == scope:
+                        names.add(ref.name)
+                        break
+                    idx = ref_scope.parent
+
+    return references_by_host
 
 
 def apply_fixes(

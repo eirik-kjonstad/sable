@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 from .tokens import Token
 
 if TYPE_CHECKING:
+    from .analysis import FileAnalysis
     from .formatter import FormatConfig
 
 
@@ -95,6 +96,8 @@ class RuleContext:
     line_starts: tuple[int, ...]
     cfg: FormatConfig
     path: Path | None = None
+    analysis: FileAnalysis | None = None
+    external_references: dict[str, set[str]] | None = None
 
 
 class Rule(Protocol):

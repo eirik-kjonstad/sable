@@ -15,6 +15,7 @@ from .formatting import (
     SBL102MissingImplicitNoneProcedureRule,
     SBL103MissingIntentOnDummyArgsRule,
 )
+from .semantic import SBL201UnusedUseOnlyImportRule
 
 _ALL_RULES: tuple[Rule, ...] = (
     SBL001RelationalOperatorRule(),
@@ -27,6 +28,7 @@ _ALL_RULES: tuple[Rule, ...] = (
     SBL101MissingImplicitNoneRule(),
     SBL102MissingImplicitNoneProcedureRule(),
     SBL103MissingIntentOnDummyArgsRule(),
+    SBL201UnusedUseOnlyImportRule(),
 )
 
 
@@ -52,7 +54,7 @@ def get_rules(
         "SBL009",
         "SBL010",
     }
-    lint_rule_ids = {"SBL101", "SBL102", "SBL103"}
+    lint_rule_ids = {"SBL101", "SBL102", "SBL103", "SBL201"}
 
     out = []
     for rule in _ALL_RULES:
