@@ -478,6 +478,833 @@ def test_check_allows_use_only_import_reexported_to_another_module(tmp_path):
     assert result.output == ""
 
 
+def test_check_reports_unused_private_type_bound_procedure(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL202", str(src)])
+
+    assert result.exit_code == 1
+    assert "SBL202" in result.output
+    assert "reset" in result.output
+
+
+def test_check_fix_keeps_unused_private_type_bound_procedure_without_unsafe(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--fix", "--select", "SBL202", str(src)])
+
+    assert result.exit_code == 1
+    assert "procedure, private :: reset => reset_worker" in src.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_check_unsafe_fix_removes_unused_private_type_bound_procedure_statement(
+    tmp_path,
+):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL202", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert src.read_text(encoding="utf-8") == (
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "   end type worker\n"
+        "contains\n"
+        "end module example\n"
+    )
+
+
+def test_check_unsafe_fix_keeps_directly_called_private_type_bound_binding(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call reset_worker(this)\n"
+        "   end subroutine use_worker\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL202", str(src)]
+    )
+
+    assert result.exit_code == 0
+    text = src.read_text(encoding="utf-8")
+    assert "procedure, private :: reset => reset_worker" in text
+    assert "subroutine reset_worker(this)" in text
+
+
+def test_check_unsafe_fix_removes_renamed_unused_private_type_bound_target_body(
+    tmp_path,
+):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL202", str(src)]
+    )
+
+    assert result.exit_code == 0
+    text = src.read_text(encoding="utf-8")
+    assert "procedure, private :: reset => reset_worker" not in text
+    assert "subroutine reset_worker" not in text
+
+
+def test_check_unsafe_fix_removes_unused_private_type_bound_submodule_body(
+    tmp_path,
+):
+    parent = tmp_path / "parent.F90"
+    child = tmp_path / "child.F90"
+    parent.write_text(
+        "module parent_module\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "end module parent_module\n",
+        encoding="utf-8",
+    )
+    child.write_text(
+        "submodule (parent_module) child_module\n"
+        "   implicit none\n"
+        "contains\n"
+        "   module subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end submodule child_module\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL202", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0
+    assert "procedure, private :: reset => reset_worker" not in parent.read_text(
+        encoding="utf-8"
+    )
+    child_text = child.read_text(encoding="utf-8")
+    assert "module subroutine reset_worker" not in child_text
+    assert "end subroutine reset_worker" not in child_text
+
+
+def test_check_unsafe_fix_keeps_submodule_binding_called_directly(tmp_path):
+    parent = tmp_path / "parent.F90"
+    child = tmp_path / "child.F90"
+    parent.write_text(
+        "module parent_module\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "end module parent_module\n",
+        encoding="utf-8",
+    )
+    child.write_text(
+        "submodule (parent_module) child_module\n"
+        "   implicit none\n"
+        "contains\n"
+        "   module subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call reset_worker(this)\n"
+        "   end subroutine use_worker\n"
+        "   module subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end submodule child_module\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL202", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0
+    assert "procedure, private :: reset => reset_worker" in parent.read_text(
+        encoding="utf-8"
+    )
+    assert "module subroutine reset_worker" in child.read_text(encoding="utf-8")
+
+
+def test_check_unsafe_fix_removes_unused_private_type_bound_procedure_item(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: run => run_worker, reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call this%run()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine run_worker\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL202", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert "procedure, private :: run => run_worker\n" in src.read_text(
+        encoding="utf-8"
+    )
+    assert "reset => reset_worker" not in src.read_text(encoding="utf-8")
+
+
+def test_check_allows_private_type_bound_procedure_used_in_module(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine run(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call this%reset()\n"
+        "   end subroutine run\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL202", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_private_type_bound_procedure_used_after_abstract_interface(
+    tmp_path,
+):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type, abstract :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "      procedure :: run\n"
+        "   end type worker\n"
+        "   abstract interface\n"
+        "      subroutine work(this)\n"
+        "         import :: worker\n"
+        "         class(worker), intent(inout) :: this\n"
+        "      end subroutine work\n"
+        "   end interface\n"
+        "contains\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "   subroutine run(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call this%reset()\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL202", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_private_type_bound_procedure_used_in_submodule(tmp_path):
+    parent = tmp_path / "parent.F90"
+    child = tmp_path / "child.F90"
+    parent.write_text(
+        "module parent_module\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "   interface\n"
+        "      module subroutine run(this)\n"
+        "         class(worker), intent(inout) :: this\n"
+        "      end subroutine run\n"
+        "   end interface\n"
+        "end module parent_module\n",
+        encoding="utf-8",
+    )
+    child.write_text(
+        "submodule (parent_module) child_module\n"
+        "   implicit none\n"
+        "contains\n"
+        "   module procedure run\n"
+        "      call this%reset()\n"
+        "   end procedure run\n"
+        "end submodule child_module\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL202", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_allows_private_type_bound_procedure_used_by_generic(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset_worker\n"
+        "      generic :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine reset_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL202", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_ignores_public_type_bound_procedure(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   private\n"
+        "   implicit none\n"
+        "   type, public :: worker\n"
+        "   contains\n"
+        "      procedure :: run => run_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine run_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine run_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL202", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_reports_direct_call_to_private_nopass_type_bound_target(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call run()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run()\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL203", str(src)])
+
+    assert result.exit_code == 1
+    assert "SBL203" in result.output
+    assert "run" in result.output
+
+
+def test_check_fix_keeps_direct_private_nopass_type_bound_call_without_unsafe(
+    tmp_path,
+):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call run()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run()\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--fix", "--select", "SBL203", str(src)])
+
+    assert result.exit_code == 1
+    assert "call run()" in src.read_text(encoding="utf-8")
+
+
+def test_check_unsafe_fix_rewrites_direct_private_nopass_type_bound_call(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call run()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run()\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL203", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert "call this%run()" in src.read_text(encoding="utf-8")
+
+
+def test_check_unsafe_fix_uses_declared_object_name_for_private_nopass_call(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(object)\n"
+        "      class(worker), intent(inout) :: object\n"
+        "      call run()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run()\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL203", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert "call object%run()" in src.read_text(encoding="utf-8")
+    assert "call this%run()" not in src.read_text(encoding="utf-8")
+
+
+def test_check_unsafe_fix_rewrites_renamed_direct_private_nopass_call(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run => run_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call run_worker()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run_worker()\n"
+        "   end subroutine run_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL203", str(src)]
+    )
+
+    assert result.exit_code == 0
+    assert "call this%run()" in src.read_text(encoding="utf-8")
+    assert "call run_worker()" not in src.read_text(encoding="utf-8")
+
+
+def test_check_reports_direct_call_to_renamed_private_nopass_type_bound_target(
+    tmp_path,
+):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run => run_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call run_worker()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run_worker()\n"
+        "   end subroutine run_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL203", str(src)])
+
+    assert result.exit_code == 1
+    assert "run_worker" in result.output
+
+
+def test_check_allows_private_nopass_type_bound_target_selected_through_object(
+    tmp_path,
+):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call this%run()\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run()\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL203", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_ignores_direct_call_to_private_pass_type_bound_target(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: run\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      call run(this)\n"
+        "   end subroutine use_worker\n"
+        "   subroutine run(this)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "   end subroutine run\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL203", str(src)])
+
+    assert result.exit_code == 0
+    assert result.output == ""
+
+
+def test_check_reports_direct_call_to_private_pass_type_bound_target(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this, value)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      integer, intent(in) :: value\n"
+        "      call reset_worker(this, value)\n"
+        "   end subroutine use_worker\n"
+        "   subroutine reset_worker(this, value)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      integer, intent(in) :: value\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL204", str(src)])
+
+    assert result.exit_code == 1
+    assert "SBL204" in result.output
+    assert "reset_worker" in result.output
+
+
+def test_check_unsafe_fix_rewrites_direct_private_pass_call(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(object, value)\n"
+        "      class(worker), intent(inout) :: object\n"
+        "      integer, intent(in) :: value\n"
+        "      call reset_worker(object, value)\n"
+        "   end subroutine use_worker\n"
+        "   subroutine reset_worker(this, value)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      integer, intent(in) :: value\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL204", str(src)]
+    )
+
+    assert result.exit_code == 0
+    text = src.read_text(encoding="utf-8")
+    assert "call object%reset(value)" in text
+    assert "call reset_worker(object, value)" not in text
+
+
+def test_check_unsafe_fix_rewrites_timings_file_style_private_pass_call(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: timings_file\n"
+        "   contains\n"
+        "      procedure, private :: print_formatted_task_name\n"
+        "   end type timings_file\n"
+        "contains\n"
+        "   subroutine print_time_timings_file(the_file, name_, pl)\n"
+        "      class(timings_file), intent(inout) :: the_file\n"
+        "      character(len=*), intent(in) :: name_\n"
+        "      character(len=*), intent(in) :: pl\n"
+        "      call print_formatted_task_name(the_file, name_, pl)\n"
+        "   end subroutine print_time_timings_file\n"
+        "   subroutine print_formatted_task_name(the_file, name_, pl)\n"
+        "      class(timings_file), intent(inout) :: the_file\n"
+        "      character(len=*), intent(in) :: name_\n"
+        "      character(len=*), intent(in) :: pl\n"
+        "   end subroutine print_formatted_task_name\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "check",
+            "--fix",
+            "--unsafe-fixes",
+            "--select",
+            "SBL202",
+            "--select",
+            "SBL204",
+            str(src),
+        ],
+    )
+
+    assert result.exit_code == 0
+    text = src.read_text(encoding="utf-8")
+    assert "procedure, private :: print_formatted_task_name" in text
+    assert "call the_file%print_formatted_task_name(name_, pl)" in text
+    assert "subroutine print_formatted_task_name" in text
+
+
+def test_check_unsafe_fix_keeps_explicit_pass_direct_call_unfixed(tmp_path):
+    src = tmp_path / "example.F90"
+    src.write_text(
+        "module example\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, pass(object) :: reset => reset_worker\n"
+        "   end type worker\n"
+        "contains\n"
+        "   subroutine use_worker(this, value)\n"
+        "      class(worker), intent(inout) :: this\n"
+        "      integer, intent(in) :: value\n"
+        "      call reset_worker(value, this)\n"
+        "   end subroutine use_worker\n"
+        "   subroutine reset_worker(value, object)\n"
+        "      integer, intent(in) :: value\n"
+        "      class(worker), intent(inout) :: object\n"
+        "   end subroutine reset_worker\n"
+        "end module example\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main, ["check", "--fix", "--unsafe-fixes", "--select", "SBL204", str(src)]
+    )
+
+    assert result.exit_code == 1
+    assert "call reset_worker(value, this)" in src.read_text(encoding="utf-8")
+
+
+def test_check_reports_direct_call_to_private_nopass_target_from_submodule(tmp_path):
+    parent = tmp_path / "parent.F90"
+    child = tmp_path / "child.F90"
+    parent.write_text(
+        "module parent_module\n"
+        "   implicit none\n"
+        "   type :: worker\n"
+        "   contains\n"
+        "      procedure, private, nopass :: run\n"
+        "   end type worker\n"
+        "   interface\n"
+        "      module subroutine use_worker(this)\n"
+        "         class(worker), intent(inout) :: this\n"
+        "      end subroutine use_worker\n"
+        "   end interface\n"
+        "end module parent_module\n",
+        encoding="utf-8",
+    )
+    child.write_text(
+        "submodule (parent_module) child_module\n"
+        "contains\n"
+        "   module procedure use_worker\n"
+        "      call run()\n"
+        "   end procedure use_worker\n"
+        "end submodule child_module\n",
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["check", "--select", "SBL203", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "SBL203" in result.output
+
+
 def test_check_json_output(tmp_path):
     src = tmp_path / "example.f90"
     src.write_text("if (A .EQ. B) then\nend if\n", encoding="utf-8")

@@ -63,6 +63,9 @@ class Procedure:
     col: int
     scope: int | None
     visibility: str = "public"
+    body_scope: int | None = None
+    end_line: int | None = None
+    end_col: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +76,18 @@ class TypeBinding:
     scope: int | None
     target: str | None = None
     visibility: str = "public"
+    nopass: bool = False
+    explicit_pass: bool = False
+    end_line: int | None = None
+    end_col: int | None = None
+    statement_line: int | None = None
+    statement_col: int | None = None
+    item_index: int = 0
+    item_count: int = 1
+    remove_start_line: int | None = None
+    remove_start_col: int | None = None
+    remove_end_line: int | None = None
+    remove_end_col: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,13 +210,24 @@ def _closer_kind(tokens: list[Token]) -> str | None:
         "endfunction": "function",
         "endtype": "type",
         "endsubmodule": "submodule",
+        "endinterface": "interface",
+        "endprocedure": "procedure",
     }
     if first in compact:
         return compact[first]
     if first != "end" or len(tokens) < 2:
         return None
     second = _text(tokens[1])
-    if second in {"module", "program", "subroutine", "function", "type", "submodule"}:
+    if second in {
+        "module",
+        "program",
+        "subroutine",
+        "function",
+        "type",
+        "submodule",
+        "interface",
+        "procedure",
+    }:
         return second
     return None
 
@@ -246,6 +272,17 @@ def _is_program_opener(tokens: list[Token]) -> bool:
     return len(tokens) >= 2 and _is_word(tokens[0], "program")
 
 
+def _is_interface_opener(tokens: list[Token]) -> bool:
+    return bool(tokens) and (
+        _is_word(tokens[0], "interface")
+        or (
+            len(tokens) >= 2
+            and _is_word(tokens[0], "abstract")
+            and _is_word(tokens[1], "interface")
+        )
+    )
+
+
 def _procedure_opener(tokens: list[Token]) -> tuple[str, Token] | None:
     if tokens and _is_word(tokens[0], "end"):
         return None
@@ -255,6 +292,14 @@ def _procedure_opener(tokens: list[Token]) -> tuple[str, Token] | None:
             if name is not None:
                 return (_text(tok), name)
     return None
+
+
+def _module_procedure_opener(tokens: list[Token]) -> Token | None:
+    if len(tokens) < 3:
+        return None
+    if not _is_word(tokens[0], "module") or not _is_word(tokens[1], "procedure"):
+        return None
+    return _first_name(tokens, 2)
 
 
 def _type_opener(tokens: list[Token]) -> Token | None:
@@ -449,8 +494,12 @@ def _parse_type_bindings(
     if colon_idx is None:
         return []
     visibility = _visibility_from_tokens(tokens[:colon_idx], default_visibility)
+    nopass = any(_is_word(tok, "nopass") for tok in tokens[:colon_idx])
+    explicit_pass = any(_is_word(tok, "pass") for tok in tokens[:colon_idx])
     bindings: list[TypeBinding] = []
-    for segment in _top_level_commas(tokens[colon_idx + 1 :]):
+    binding_tokens = tokens[colon_idx + 1 :]
+    binding_spans = _top_level_comma_spans(binding_tokens)
+    for item_index, (segment, start_idx, end_idx) in enumerate(binding_spans):
         arrow_idx = next(
             (i for i, tok in enumerate(segment) if tok.kind == TokenKind.OP_ARROW),
             None,
@@ -464,6 +513,14 @@ def _parse_type_bindings(
             target = target_tok.text.lower() if target_tok else None
         if name is None:
             continue
+        end_tok = segment[-1]
+        remove_start = binding_tokens[start_idx - 1] if start_idx > 0 else segment[0]
+        remove_end = (
+            binding_tokens[end_idx]
+            if end_idx < len(binding_tokens)
+            and binding_tokens[end_idx].kind == TokenKind.COMMA
+            else end_tok
+        )
         bindings.append(
             TypeBinding(
                 name=name.text.lower(),
@@ -472,6 +529,18 @@ def _parse_type_bindings(
                 scope=scope,
                 target=target,
                 visibility=visibility,
+                nopass=nopass,
+                explicit_pass=explicit_pass,
+                end_line=end_tok.line,
+                end_col=end_tok.col + len(end_tok.text),
+                statement_line=tokens[0].line,
+                statement_col=tokens[0].col,
+                item_index=item_index,
+                item_count=len(binding_spans),
+                remove_start_line=remove_start.line,
+                remove_start_col=remove_start.col,
+                remove_end_line=remove_end.line,
+                remove_end_col=remove_end.col + len(remove_end.text),
             )
         )
     return bindings
@@ -489,6 +558,31 @@ def _type_binding_references(tokens: list[Token], scope: int | None) -> list[Ref
     return [
         _name_reference(tok, scope)
         for tok in tokens[:colon_idx]
+        if tok.kind == TokenKind.NAME
+    ]
+
+
+def _type_bound_generic_references(
+    tokens: list[Token], scope: int | None
+) -> list[Reference]:
+    if not tokens or not _is_word(tokens[0], "generic"):
+        return []
+    arrow_idx = next(
+        (i for i, tok in enumerate(tokens) if tok.kind == TokenKind.OP_ARROW),
+        None,
+    )
+    if arrow_idx is None:
+        return []
+    return [
+        Reference(
+            name=tok.text.lower(),
+            line=tok.line,
+            col=tok.col,
+            scope=scope,
+            kind="type_bound_generic_target",
+        )
+        for segment in _top_level_commas(tokens[arrow_idx + 1 :])
+        for tok in segment
         if tok.kind == TokenKind.NAME
     ]
 
@@ -518,6 +612,25 @@ def _call_reference(tokens: list[Token], scope: int | None) -> Reference | None:
         scope=scope,
         kind="call",
     )
+
+
+def _selector_references(tokens: list[Token], scope: int | None) -> list[Reference]:
+    refs: list[Reference] = []
+    for i, tok in enumerate(tokens[:-1]):
+        if tok.kind != TokenKind.OP_PERCENT or tokens[i + 1].kind != TokenKind.NAME:
+            continue
+        qualifier = tokens[i - 1].text.lower() if i > 0 else None
+        refs.append(
+            Reference(
+                name=tokens[i + 1].text.lower(),
+                line=tokens[i + 1].line,
+                col=tokens[i + 1].col,
+                scope=scope,
+                kind="selector",
+                qualifier=qualifier,
+            )
+        )
+    return refs
 
 
 def _function_references(tokens: list[Token], scope: int | None) -> list[Reference]:
@@ -591,7 +704,11 @@ def analyze_file(
         return scopes[idx] if idx is not None else None
 
     def push_scope(
-        kind: str, name: Token | None, opener: Token, host_name: str | None = None
+        kind: str,
+        name: Token | None,
+        opener: Token,
+        host_name: str | None = None,
+        default_visibility: str | None = None,
     ) -> int:
         idx = len(scopes)
         parent = current_scope_index()
@@ -602,18 +719,43 @@ def analyze_file(
                 line=opener.line,
                 col=opener.col,
                 parent=parent,
-                default_visibility=_scope_visibility(current_scope()),
+                default_visibility=(
+                    default_visibility
+                    if default_visibility is not None
+                    else _scope_visibility(current_scope())
+                ),
                 host_name=host_name,
             )
         )
         stack.append(idx)
         return idx
 
-    def pop_scope(kind: str) -> None:
+    def pop_scope(kind: str) -> int | None:
+        if not any(scopes[idx].kind == kind for idx in stack):
+            return None
         while stack:
             idx = stack.pop()
             if scopes[idx].kind == kind:
-                return
+                return idx
+        return None
+
+    def close_procedure(body_scope: int, closer: Token) -> None:
+        for i in range(len(procedures) - 1, -1, -1):
+            procedure = procedures[i]
+            if procedure.body_scope != body_scope or procedure.end_line is not None:
+                continue
+            procedures[i] = Procedure(
+                kind=procedure.kind,
+                name=procedure.name,
+                line=procedure.line,
+                col=procedure.col,
+                scope=procedure.scope,
+                visibility=procedure.visibility,
+                body_scope=procedure.body_scope,
+                end_line=closer.line,
+                end_col=closer.col + len(closer.text),
+            )
+            return
 
     for logical_line in logical_lines:
         references.extend(
@@ -625,7 +767,13 @@ def analyze_file(
 
         closer = _closer_kind(core)
         if closer is not None:
-            pop_scope(closer)
+            closed_scope = pop_scope(closer)
+            if closed_scope is not None and closer in {
+                "subroutine",
+                "function",
+                "procedure",
+            }:
+                close_procedure(closed_scope, core[-1])
             continue
 
         scope_idx = current_scope_index()
@@ -665,15 +813,40 @@ def analyze_file(
             push_scope("program", name, core[0])
             continue
 
+        if _is_interface_opener(core):
+            push_scope("interface", _first_name(core, 1), core[0])
+            continue
+
         type_name = _type_opener(core)
         if type_name is not None:
             references.extend(_type_opener_references(core, scope_idx))
-            push_scope("type", type_name, core[0])
+            push_scope("type", type_name, core[0], default_visibility="public")
+            continue
+
+        module_proc_name = _module_procedure_opener(core)
+        if (
+            module_proc_name is not None
+            and scope is not None
+            and scope.kind == "submodule"
+        ):
+            proc_scope = push_scope("procedure", module_proc_name, core[0])
+            procedures.append(
+                Procedure(
+                    kind="procedure",
+                    name=module_proc_name.text.lower(),
+                    line=module_proc_name.line,
+                    col=module_proc_name.col,
+                    scope=scope_idx,
+                    visibility=_scope_visibility(scope),
+                    body_scope=proc_scope,
+                )
+            )
             continue
 
         proc = _procedure_opener(core)
         if proc is not None:
             kind, name = proc
+            proc_scope = push_scope(kind, name, core[0])
             procedures.append(
                 Procedure(
                     kind=kind,
@@ -682,9 +855,9 @@ def analyze_file(
                     col=name.col,
                     scope=scope_idx,
                     visibility=_scope_visibility(scope),
+                    body_scope=proc_scope,
                 )
             )
-            push_scope(kind, name, core[0])
             continue
 
         default_visibility = _scope_visibility(scope)
@@ -693,6 +866,10 @@ def analyze_file(
             if parsed_bindings:
                 type_bindings.extend(parsed_bindings)
                 references.extend(_type_binding_references(core, scope_idx))
+                continue
+            generic_references = _type_bound_generic_references(core, scope_idx)
+            if generic_references:
+                references.extend(generic_references)
                 continue
 
         parsed_imports = _parse_use_imports(core, scope_idx)
@@ -709,6 +886,7 @@ def analyze_file(
         call_ref = _call_reference(core, scope_idx)
         if call_ref is not None:
             references.append(call_ref)
+        references.extend(_selector_references(core, scope_idx))
         references.extend(_function_references(core, scope_idx))
         references.extend(_name_references(core, scope_idx))
 

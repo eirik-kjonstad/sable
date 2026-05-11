@@ -14,7 +14,15 @@ except ModuleNotFoundError:  # Python 3.10
 
 from . import __version__
 from .baseline import diagnostic_key, load_baseline, write_baseline
-from .checker import apply_fixes, check_source, collect_external_references
+from .checker import (
+    apply_fixes_to_sources,
+    check_source,
+    collect_external_direct_calls,
+    collect_external_procedure_bodies,
+    collect_external_references,
+    collect_external_selectors,
+)
+from .diagnostics import Diagnostic
 from .formatter import DEFAULT_CONFIG, FormatConfig, format_source
 from .outputs import (
     render_diagnostics_gitlab_codequality,
@@ -406,45 +414,58 @@ def _run_check(
         click.echo(f"{SYM_ERR} {_fmt_label(str(path))}: {exc}", err=True)
         n_errors += 1
 
-    external_references = collect_external_references(sources)
+    def run_checks(
+        current_sources: list[tuple[str, Path | None]],
+    ) -> list[Diagnostic]:
+        nonlocal n_errors
 
-    for source, path in sources:
-        label = str(path) if path else "<stdin>"
-        try:
-            file_diagnostics = check_source(
-                source=source,
-                cfg=cfg,
-                path=path,
-                select=set(select) if select else None,
-                ignore=set(ignore) if ignore else None,
-                rule_set=rule_set,
-                external_references=external_references,
-            )
-            if fix:
-                fixed, _n_applied = apply_fixes(
-                    source, file_diagnostics, include_unsafe=unsafe_fixes
+        current_diagnostics: list[Diagnostic] = []
+        external_references = collect_external_references(current_sources)
+        external_selectors = collect_external_selectors(current_sources)
+        external_direct_calls = collect_external_direct_calls(current_sources)
+        external_procedure_bodies = collect_external_procedure_bodies(current_sources)
+
+        for source, path in current_sources:
+            label = str(path) if path else "<stdin>"
+            try:
+                current_diagnostics.extend(
+                    check_source(
+                        source=source,
+                        cfg=cfg,
+                        path=path,
+                        select=set(select) if select else None,
+                        ignore=set(ignore) if ignore else None,
+                        rule_set=rule_set,
+                        external_references=external_references,
+                        external_selectors=external_selectors,
+                        external_direct_calls=external_direct_calls,
+                        external_procedure_bodies=external_procedure_bodies,
+                    )
                 )
-                if fixed != source:
-                    if path and str(path) != "-":
-                        path.write_text(fixed, encoding="utf-8")
-                    else:
-                        stdin_fixed = True
-                        click.echo(fixed, nl=False)
-                    source = fixed
-                file_diagnostics = check_source(
-                    source=source,
-                    cfg=cfg,
-                    path=path,
-                    select=set(select) if select else None,
-                    ignore=set(ignore) if ignore else None,
-                    rule_set=rule_set,
-                    external_references=external_references,
-                )
-            diagnostics.extend(file_diagnostics)
-            source_lookup[label] = source
-        except Exception as exc:  # noqa: BLE001
-            click.echo(f"{SYM_ERR} {_fmt_label(label)}: {exc}", err=True)
-            n_errors += 1
+                source_lookup[label] = source
+            except Exception as exc:  # noqa: BLE001
+                click.echo(f"{SYM_ERR} {_fmt_label(label)}: {exc}", err=True)
+                n_errors += 1
+        return current_diagnostics
+
+    diagnostics = run_checks(sources)
+
+    if fix:
+        sources, changed_paths, _n_applied = apply_fixes_to_sources(
+            sources,
+            diagnostics,
+            include_unsafe=unsafe_fixes,
+        )
+        for source, path in sources:
+            if path not in changed_paths:
+                continue
+            if path and str(path) != "-":
+                path.write_text(source, encoding="utf-8")
+            else:
+                stdin_fixed = True
+                click.echo(source, nl=False)
+
+        diagnostics = run_checks(sources)
 
     if baseline_keys:
         diagnostics = [

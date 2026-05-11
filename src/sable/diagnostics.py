@@ -36,9 +36,31 @@ class TextEdit:
     start: int
     end: int
     replacement: str
+    path: Path | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {"start": self.start, "end": self.end, "replacement": self.replacement}
+        payload: dict[str, object] = {
+            "start": self.start,
+            "end": self.end,
+            "replacement": self.replacement,
+        }
+        if self.path is not None:
+            payload["path"] = str(self.path)
+        return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ProcedureBody:
+    """A procedure body available to project-level rules."""
+
+    name: str
+    path: Path | None
+    line: int
+    col: int
+    end_line: int
+    end_col: int
+    start: int
+    end: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +120,11 @@ class RuleContext:
     path: Path | None = None
     analysis: FileAnalysis | None = None
     external_references: dict[str, set[str]] | None = None
+    external_selectors: dict[str, set[str]] | None = None
+    external_direct_calls: dict[str, set[str]] | None = None
+    external_procedure_bodies: (
+        dict[str, dict[str, tuple[ProcedureBody, ...]]] | None
+    ) = None
 
 
 class Rule(Protocol):

@@ -97,19 +97,18 @@ def render_diagnostics_sarif(
             ],
         }
         if diag.fix is not None:
-            replacements: list[dict[str, Any]] = []
-            label = uri
-            source = source_lookup.get(label, "") if source_lookup else ""
-            starts = _line_starts(source) if source else []
-
+            replacements_by_uri: dict[str, list[dict[str, Any]]] = {}
             for edit in diag.fix.edits:
+                label = str(edit.path) if edit.path is not None else uri
+                source = source_lookup.get(label, "") if source_lookup else ""
+                starts = _line_starts(source) if source else []
                 if source and 0 <= edit.start <= edit.end <= len(source):
                     s_line, s_col = _offset_to_line_col(starts, edit.start)
                     e_line, e_col = _offset_to_line_col(starts, edit.end)
                 else:
                     s_line, s_col = diag.line, diag.col
                     e_line, e_col = diag.end_line, diag.end_col
-                replacements.append(
+                replacements_by_uri.setdefault(label, []).append(
                     {
                         "deletedRegion": {
                             "startLine": s_line,
@@ -128,6 +127,7 @@ def render_diagnostics_sarif(
                             "artifactLocation": _artifact_location(label),
                             "replacements": replacements,
                         }
+                        for label, replacements in replacements_by_uri.items()
                     ],
                 }
             ]
