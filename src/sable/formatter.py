@@ -1326,6 +1326,9 @@ def _find_top_level_paren_groups(tokens: list[Token]) -> list[tuple[int, int]]:
     return spans
 
 
+_MISSING_ASSIGNMENT = object()
+
+
 def _find_top_level_assignment_index(tokens: list[Token]) -> int | None:
     """Return index of the first top-level assignment operator, if any."""
     depth = 0
@@ -1340,10 +1343,14 @@ def _find_top_level_assignment_index(tokens: list[Token]) -> int | None:
 
 
 def _is_lhs_subscript_paren_group(
-    tokens: list[Token], open_idx: int, close_idx: int
+    tokens: list[Token],
+    open_idx: int,
+    close_idx: int,
+    assignment_idx: int | None | object = _MISSING_ASSIGNMENT,
 ) -> bool:
     """Return True when `( ... )` is part of the assignment LHS designator."""
-    assignment_idx = _find_top_level_assignment_index(tokens)
+    if assignment_idx is _MISSING_ASSIGNMENT:
+        assignment_idx = _find_top_level_assignment_index(tokens)
     return assignment_idx is not None and close_idx < assignment_idx
 
 
@@ -1521,14 +1528,19 @@ def _is_paren_slash_array_constructor(inner: list[Token]) -> bool:
 
 
 def _is_explodable_arg_list_span(
-    tokens: list[Token], open_idx: int, close_idx: int
+    tokens: list[Token],
+    open_idx: int,
+    close_idx: int,
+    assignment_idx: int | None | object = _MISSING_ASSIGNMENT,
 ) -> bool:
     """Return True when ``tokens[open_idx:close_idx+1]`` is a call-like arg list."""
     inner = tokens[open_idx + 1 : close_idx]
 
     # Assignment LHS designators such as arr(i, j) are index lists, not
     # call-like argument lists. Prefer keeping them compact and wrapping RHS.
-    if _is_lhs_subscript_paren_group(tokens, open_idx, close_idx):
+    if assignment_idx is _MISSING_ASSIGNMENT:
+        assignment_idx = _find_top_level_assignment_index(tokens)
+    if _is_lhs_subscript_paren_group(tokens, open_idx, close_idx, assignment_idx):
         return False
     if (
         open_idx > 0
@@ -1593,7 +1605,10 @@ def _is_explodable_arg_list_span(
     return True
 
 
-def _find_explodable_arg_list_span(tokens: list[Token]) -> tuple[int, int] | None:
+def _find_explodable_arg_list_span(
+    tokens: list[Token],
+    assignment_idx: int | None | object = _MISSING_ASSIGNMENT,
+) -> tuple[int, int] | None:
     """Pick the best arg-list span to explode.
 
     Preference:
@@ -1603,18 +1618,21 @@ def _find_explodable_arg_list_span(tokens: list[Token]) -> tuple[int, int] | Non
     spans = _find_top_level_paren_groups(tokens)
     if not spans:
         return None
-    assignment_idx = _find_top_level_assignment_index(tokens)
+    if assignment_idx is _MISSING_ASSIGNMENT:
+        assignment_idx = _find_top_level_assignment_index(tokens)
     if assignment_idx is not None:
         rhs_first = next((span for span in spans if span[0] > assignment_idx), None)
         if rhs_first is not None:
             return (
                 rhs_first
-                if _is_explodable_arg_list_span(tokens, rhs_first[0], rhs_first[1])
+                if _is_explodable_arg_list_span(
+                    tokens, rhs_first[0], rhs_first[1], assignment_idx
+                )
                 else None
             )
 
     for open_idx, close_idx in spans:
-        if _is_explodable_arg_list_span(tokens, open_idx, close_idx):
+        if _is_explodable_arg_list_span(tokens, open_idx, close_idx, assignment_idx):
             return open_idx, close_idx
     return None
 
@@ -2401,6 +2419,24 @@ def _prefer_exploded_arg_list(tokens: list[Token]) -> bool:
     already made an argument list multiline, keep it exploded even when it would
     fit within the configured line length.
     """
+    has_open_paren = False
+    first_line: int | None = None
+    has_multiple_code_lines = False
+    for tok in tokens:
+        if tok.kind == TokenKind.COMMENT:
+            continue
+        if tok.kind == TokenKind.LPAREN:
+            has_open_paren = True
+        if first_line is None:
+            first_line = tok.line
+        elif tok.line != first_line:
+            has_multiple_code_lines = True
+            if has_open_paren:
+                break
+
+    if not has_open_paren or not has_multiple_code_lines:
+        return False
+
     paren_span = _find_explodable_arg_list_span(tokens)
     if paren_span is None:
         return False
