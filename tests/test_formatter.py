@@ -8,6 +8,13 @@ def fmt(source: str, **kwargs) -> str:
     return format_source(source, cfg)
 
 
+def assert_idempotent(source: str, **kwargs) -> str:
+    first = fmt(source, **kwargs)
+    second = fmt(first, **kwargs)
+    assert second == first
+    return first
+
+
 class TestKeywordCasing:
     def test_keywords_lowercased_by_default(self):
         result = fmt("INTEGER :: x")
@@ -85,6 +92,59 @@ class TestTrailingNewline:
     def test_no_double_newline(self):
         result = fmt("x = 1\n")
         assert result == result.rstrip("\n") + "\n"
+
+
+class TestETIdempotencyRegressions:
+    def test_continued_array_constructor_comments_converge_in_one_call(self):
+        source = (
+            "subroutine s\n"
+            "this%lc_shells(:, current_shell) = &\n"
+            "   [int(center_index - 1, c_int), int(l, c_int), "
+            "int(n_primitives, c_int), 1_c_int, 0_c_int, &\n"
+            "   int(exponent_offset, c_int), int(coefficient_offset, c_int), &\n"
+            "   0_c_int]! Atom index! Angular momentum! Primitives! "
+            "One contracted per shell! No Spinor &\n"
+            "   ! Exponent offset! Coefficient offset  ! Unused\n"
+            "end subroutine s\n"
+        )
+
+        result = assert_idempotent(source, line_length=110)
+
+        assert "]!" not in result
+        assert "! Exponent offset!" in result
+
+    def test_single_line_if_with_authored_multiline_call_converges_in_one_call(self):
+        source = (
+            "subroutine s\n"
+            "if (this%mo_density_matrix_required) "
+            "call mem%alloc(this%mo_density_matrix, this%n_mo, &\n"
+            "                                                    this%n_mo)\n"
+            "end subroutine s\n"
+        )
+
+        result = assert_idempotent(source, line_length=110)
+
+        assert (
+            "if (this%mo_density_matrix_required) "
+            "call mem%alloc(this%mo_density_matrix, this%n_mo, this%n_mo)"
+        ) in result
+
+    def test_bracket_constructor_with_nested_call_and_comments_is_idempotent(self):
+        source = (
+            "subroutine s\n"
+            "this%lc_centers(:, i) = &\n"
+            "   [int(centers(i)%nuclear_charge, c_int), "
+            "int(offset - 1, c_int), 0_c_int, 0_c_int, 0_c_int, &\n"
+            "   0_c_int]! Nuclear charge! Where in env are coords &\n"
+            "   ! Nuclear charge distribution model = point charge! "
+            "Unused! Unused  ! Unused\n"
+            "end subroutine s\n"
+        )
+
+        result = assert_idempotent(source, line_length=110)
+
+        assert "c_int &\n" not in result
+        assert "]!" not in result
 
 
 class TestSpacing:

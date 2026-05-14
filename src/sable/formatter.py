@@ -1304,18 +1304,23 @@ def _find_outermost_paren_group(tokens: list[Token]) -> tuple[int, int] | None:
 
 
 def _find_top_level_paren_groups(tokens: list[Token]) -> list[tuple[int, int]]:
-    """Return all top-level ``( ... )`` groups in left-to-right order."""
+    """Return all top-level ``( ... )`` groups in left-to-right order.
+
+    Parentheses nested inside bracket array constructors are not top-level
+    argument lists. Treating them as explodable call spans can make a later pass
+    parse the formatter's own output differently.
+    """
     spans: list[tuple[int, int]] = []
     depth = 0
     open_idx: int | None = None
     for i, tok in enumerate(tokens):
-        if tok.kind == TokenKind.LPAREN:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
             if depth == 0:
-                open_idx = i
+                open_idx = i if tok.kind == TokenKind.LPAREN else None
             depth += 1
-        elif tok.kind == TokenKind.RPAREN:
-            depth -= 1
-            if depth == 0 and open_idx is not None:
+        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+            if tok.kind == TokenKind.RPAREN and depth == 0 and open_idx is not None:
                 spans.append((open_idx, i))
                 open_idx = None
     return spans
@@ -1805,6 +1810,29 @@ def _render_prefix(
         prev_prev = prev
         prev = tok
     return parts
+
+
+def _collapse_trailing_comments(
+    body: list[Token],
+    comment: Token | None,
+) -> tuple[list[Token], Token | None]:
+    """Move trailing comment tokens out of *body* into one render comment."""
+    collapsed_body = list(body)
+    comments: list[Token] = []
+    while collapsed_body and collapsed_body[-1].kind == TokenKind.COMMENT:
+        comments.append(collapsed_body.pop())
+    comments.reverse()
+    if comment is not None:
+        comments.append(comment)
+    if not comments:
+        return body, comment
+
+    text = "  ".join(
+        tok.text for tok in comments if not re.fullmatch(r"!\s*", tok.text)
+    )
+    if not text:
+        return collapsed_body, None
+    return collapsed_body, _make_token(TokenKind.COMMENT, text, comments[0])
 
 
 def _pick_split_index(
@@ -2318,14 +2346,24 @@ def _try_expand_arg_list(
     # "&" (invalid Fortran).
     lines: list[str] = []
     inline_close = False
+    close_comment_texts = [tok.text for tok in close_line_comments]
+    close_comment_anchor = close_line_comments[0] if close_line_comments else None
     if start_arg_idx == 1 and content_lines:
-        close_comment_suffix = _comment_suffix(close_line_comments)
+        close_comment_suffix = (
+            "  " + "  ".join(close_comment_texts) if close_comment_texts else ""
+        )
         inline_candidate = content_lines[-1] + close_piece
         inline_comment = content_comments[-1] + close_comment_suffix
         if len(inline_candidate) + len(inline_comment) <= cfg.line_length:
             inline_close = True
             content_lines[-1] = inline_candidate
             content_comments[-1] = inline_comment
+        elif content_comments[-1]:
+            final_comment = content_comments[-1].strip()
+            if final_comment:
+                close_comment_texts.append(final_comment)
+                close_comment_anchor = close_comment_anchor or code_body[close_idx]
+                content_comments[-1] = ""
 
     for idx, content in enumerate(content_lines):
         is_last_content = idx == len(content_lines) - 1
@@ -2346,10 +2384,10 @@ def _try_expand_arg_list(
     # (e.g. result(r) or chained expressions). Reuse the normal line renderer so
     # long suffixes are also split to respect line_length.
     close_tokens = [code_body[close_idx]] + code_body[close_idx + 1 :]
-    if close_line_comments:
-        close_comment_text = "  ".join(tok.text for tok in close_line_comments)
+    if close_comment_texts and close_comment_anchor is not None:
+        close_comment_text = "  ".join(close_comment_texts)
         close_tokens.append(
-            _make_token(TokenKind.COMMENT, close_comment_text, close_line_comments[0])
+            _make_token(TokenKind.COMMENT, close_comment_text, close_comment_anchor)
         )
     lines.extend(render_logical_line(close_tokens, close_indent, cfg))
 
@@ -2626,6 +2664,12 @@ def render_logical_line(
     # Internal continuation markers are input artefacts from authored multiline
     # code; layout reconstruction decides fresh continuation placement.
     body = [tok for tok in body if tok.kind != TokenKind.CONTINUATION]
+    raw_body = body
+    raw_comment = comment
+    body, comment = _collapse_trailing_comments(body, comment)
+    expansion_inputs = [(raw_body, raw_comment)]
+    if body != raw_body or comment != raw_comment:
+        expansion_inputs.append((body, comment))
 
     # Build the token string with spacing
     line_body = _render_tokens(body)
@@ -2682,12 +2726,15 @@ def render_logical_line(
 
     # Preserve manually multiline argument lists even when they fit on one line.
     if prefer_exploded_arg_list:
-        expanded = _try_expand_arg_list(body, comment, indent, cfg)
-        if expanded is not None:
-            if force_trailing_continuation and expanded:
-                expanded[-1] = expanded[-1] + " &"
-            if all(len(line) <= cfg.line_length for line in expanded):
-                return expanded
+        for expansion_body, expansion_comment in expansion_inputs:
+            expanded = _try_expand_arg_list(
+                expansion_body, expansion_comment, indent, cfg
+            )
+            if expanded is not None:
+                if force_trailing_continuation and expanded:
+                    expanded[-1] = expanded[-1] + " &"
+                if all(len(line) <= cfg.line_length for line in expanded):
+                    return expanded
 
     if len(full_line) <= cfg.line_length:
         return [full_line]
@@ -2716,12 +2763,13 @@ def render_logical_line(
         return split_before_explosion
 
     # Try the one-argument-per-line expansion first (Black-style)
-    expanded = _try_expand_arg_list(body, comment, indent, cfg)
-    if expanded is not None:
-        if force_trailing_continuation and expanded:
-            expanded[-1] = expanded[-1] + " &"
-        if all(len(line) <= cfg.line_length for line in expanded):
-            return expanded
+    for expansion_body, expansion_comment in expansion_inputs:
+        expanded = _try_expand_arg_list(expansion_body, expansion_comment, indent, cfg)
+        if expanded is not None:
+            if force_trailing_continuation and expanded:
+                expanded[-1] = expanded[-1] + " &"
+            if all(len(line) <= cfg.line_length for line in expanded):
+                return expanded
 
     # Fall back to a greedy split: pack as many tokens per physical line as possible
     lines: list[str] = []
@@ -3187,7 +3235,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
                 indent,
                 cfg,
                 continuation_step=continuation_step,
-                prefer_exploded_arg_list=prefer_exploded,
+                prefer_exploded_arg_list=False,
             )
             if len(physical) == 1:
                 # Fits on one line — keep the action on the same line as the if.
