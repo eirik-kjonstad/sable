@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
+from os import cpu_count
 from pathlib import Path
 
 import click
@@ -143,6 +145,8 @@ def _make_safe_config(base: FormatConfig) -> FormatConfig:
 
 
 _FORTRAN_SUFFIXES = {".f90", ".F90", ".f95", ".F95", ".f03", ".F03", ".f08", ".F08"}
+_FORMAT_PARALLEL_FILE_THRESHOLD = 8
+_FORMAT_MAX_WORKERS = 8
 
 
 def _collect_files(path: Path) -> list[Path]:
@@ -247,6 +251,50 @@ def _read_sources(
     return sources, read_errors
 
 
+def _format_source_for_cli(
+    args: tuple[str, FormatConfig, FormatConfig, bool],
+) -> tuple[str | None, bool, str | None]:
+    source, cfg, safe_cfg, safe = args
+    try:
+        formatted = format_source(source, safe_cfg)
+        safe_non_safe_available = False
+        if safe:
+            full_formatted = format_source(source, cfg)
+            safe_non_safe_available = full_formatted != formatted
+        return formatted, safe_non_safe_available, None
+    except Exception as exc:  # noqa: BLE001
+        return None, False, str(exc)
+
+
+def _should_parallel_format(sources: list[tuple[str, Path | None]]) -> bool:
+    if len(sources) < _FORMAT_PARALLEL_FILE_THRESHOLD:
+        return False
+    return all(path is not None and str(path) != "-" for _source, path in sources)
+
+
+def _format_sources(
+    sources: list[tuple[str, Path | None]],
+    cfg: FormatConfig,
+    safe_cfg: FormatConfig,
+    safe: bool,
+) -> Iterator[tuple[str | None, bool, str | None]]:
+    jobs = [(source, cfg, safe_cfg, safe) for source, _path in sources]
+    if not _should_parallel_format(sources):
+        for job in jobs:
+            yield _format_source_for_cli(job)
+        return
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    max_workers = min(cpu_count() or 1, _FORMAT_MAX_WORKERS, len(jobs))
+    try:
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            yield from executor.map(_format_source_for_cli, jobs)
+    except OSError:
+        for job in jobs:
+            yield _format_source_for_cli(job)
+
+
 def _run_format(
     files: tuple[Path, ...],
     check: bool,
@@ -273,19 +321,17 @@ def _run_format(
         exit_code = 123
         n_errors += 1
 
-    for source, path in sources:
+    for (source, path), (formatted, safe_non_safe_available, error) in zip(
+        sources, _format_sources(sources, cfg, safe_cfg, safe), strict=True
+    ):
         label = str(path) if path else "<stdin>"
-        try:
-            formatted = format_source(source, safe_cfg)
-            if safe:
-                full_formatted = format_source(source, cfg)
-                if full_formatted != formatted:
-                    n_safe_non_safe_available += 1
-        except Exception as exc:  # noqa: BLE001
-            click.echo(f"{SYM_ERR} {_fmt_label(label)}: {exc}", err=True)
+        if error is not None or formatted is None:
+            click.echo(f"{SYM_ERR} {_fmt_label(label)}: {error}", err=True)
             exit_code = 123
             n_errors += 1
             continue
+        if safe_non_safe_available:
+            n_safe_non_safe_available += 1
 
         changed = formatted != source
 
