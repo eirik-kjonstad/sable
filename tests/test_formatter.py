@@ -203,6 +203,18 @@ class TestDeclarationCanonicalization:
         result = fmt("integer x\nreal(kind=8) y\n")
         assert result.splitlines() == ["integer :: x", "real(kind=8) :: y"]
 
+    def test_preserves_legacy_star_kind_declaration(self):
+        result = fmt("      real*8 :: FMS_RANB\n")
+        assert result == "real*8 :: FMS_RANB\n"
+
+    def test_inserts_double_colon_after_legacy_star_kind_declaration(self):
+        result = fmt("real*8 FMS_RANB\n")
+        assert result == "real*8 :: FMS_RANB\n"
+
+    def test_orders_attributes_after_legacy_star_kind_declaration(self):
+        result = fmt("real*8, pointer, dimension(:) :: x\n")
+        assert result == "real*8, dimension(:), pointer :: x\n"
+
     def test_canonical_attribute_order(self):
         result = fmt("integer, optional, parameter, intent(in), dimension(:,:) :: x\n")
         assert (
@@ -1044,6 +1056,44 @@ class TestContinuationWithComments:
         assert "! L_Jj_i" in l_line
         assert not any("! X_a_Jj" in line and "! L_Jj_i" in line for line in lines)
 
+    def test_multiline_declaration_entity_comments_keep_continuation(self):
+        src = (
+            "real(kind=DefReal), allocatable :: &\n"
+            "   ElecPhase(:), & !< Electronic phase\n"
+            "   TransDipolexf(:), & !< xf added\n"
+            "   !           Need this one for restart file\n"
+            "   OldMSPT2C(:, :) !< MSPT2 Mixing Coeff last timestep\n"
+        )
+        result = fmt(src)
+        lines = result.splitlines()
+
+        elec_line = next(line for line in lines if "ElecPhase" in line)
+        xf_line = next(line for line in lines if "TransDipolexf" in line)
+
+        assert elec_line.endswith(", &  !< Electronic phase")
+        assert xf_line.endswith(", &  !< xf added")
+        assert not any(
+            "TransDipolexf" in line and ",  !< xf added" in line for line in lines
+        )
+
+    def test_multiline_declaration_entity_comments_do_not_split_after_marker(self):
+        src = (
+            "real(kind=DefReal) :: &\n"
+            "   ModPot, &  !< External potential, for SMD, etc.\n"
+            "   MMPot  !< Potential of MM system, for QM/MM runs\n"
+        )
+        result = fmt(src)
+        lines = result.splitlines()
+
+        assert lines[0] == (
+            "real(kind=DefReal) :: ModPot, &  " "!< External potential, for SMD, etc."
+        )
+        assert not any(line.rstrip().endswith(":: &") for line in lines)
+
+    def test_single_line_declaration_trailing_comment_does_not_explode(self):
+        result = fmt("integer :: a, b ! trailing\n")
+        assert result == "integer :: a, b  ! trailing\n"
+
     def test_bare_trailing_bang_comment_is_removed(self):
         source = (
             "      this%dipole_moment_output = input%is_keyword_present( &\n"
@@ -1077,6 +1127,9 @@ class TestKeywordParenSpacing:
 
     def test_no_space_in_real_kind(self):
         assert "real(8)" in fmt("real(8) :: x")
+
+    def test_no_space_in_legacy_star_kind(self):
+        assert "real*8" in fmt("real*8 :: x")
 
     def test_no_space_in_type_variable(self):
         assert "type(mytype)" in fmt("type(mytype) :: obj")
@@ -2283,3 +2336,16 @@ class TestIdempotency:
         once = fmt(source)
         twice = fmt(once)
         assert once == twice
+
+    def test_multiline_declaration_comments_attach_to_last_entity_on_line(self):
+        source = (
+            "integer(kind=DefInt) :: it, &  ! label of trajectories\n"
+            "                        jt, ic, &  ! centroid's labels\n"
+            "                        jc, is, &  ! state labels\n"
+            "                        js\n"
+        )
+        once = fmt(source, line_length=110)
+        twice = fmt(once, line_length=110)
+        assert once == twice
+        assert "jt, ic, &  ! centroid's labels" in once
+        assert "jc, is, &  ! state labels" in once
