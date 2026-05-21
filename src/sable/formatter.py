@@ -1342,6 +1342,49 @@ def _find_top_level_assignment_index(tokens: list[Token]) -> int | None:
     return None
 
 
+def _find_rhs_leading_designator_end(
+    tokens: list[Token], assignment_idx: int
+) -> int | None:
+    """Return the end index of an initial parenthesised RHS designator/call."""
+    idx = assignment_idx + 1
+    if idx >= len(tokens) or tokens[idx].kind not in (
+        TokenKind.NAME,
+        TokenKind.KEYWORD,
+    ):
+        return None
+
+    saw_paren_group = False
+    while idx < len(tokens):
+        tok = tokens[idx]
+        if tok.kind in (TokenKind.NAME, TokenKind.KEYWORD):
+            idx += 1
+            continue
+        if (
+            tok.kind == TokenKind.OP_PERCENT
+            and idx + 1 < len(tokens)
+            and tokens[idx + 1].kind in (TokenKind.NAME, TokenKind.KEYWORD)
+        ):
+            idx += 2
+            continue
+        if tok.kind == TokenKind.LPAREN:
+            depth = 1
+            close_idx = idx + 1
+            while close_idx < len(tokens) and depth > 0:
+                if tokens[close_idx].kind == TokenKind.LPAREN:
+                    depth += 1
+                elif tokens[close_idx].kind == TokenKind.RPAREN:
+                    depth -= 1
+                close_idx += 1
+            if depth != 0:
+                return None
+            saw_paren_group = True
+            idx = close_idx
+            continue
+        break
+
+    return idx - 1 if saw_paren_group else None
+
+
 def _is_lhs_subscript_paren_group(
     tokens: list[Token],
     open_idx: int,
@@ -1992,6 +2035,21 @@ def _pick_split_index(
             and leading_paren[1] <= fit_upto
         ):
             protected_end = leading_paren[1]
+
+        assignment_idx = _find_top_level_assignment_index(tokens)
+        if assignment_idx is not None and assignment_idx < fit_upto:
+            rhs_designator_end = _find_rhs_leading_designator_end(
+                tokens, assignment_idx
+            )
+            if (
+                rhs_designator_end is not None
+                and assignment_idx < rhs_designator_end <= fit_upto
+            ):
+                protected_end = (
+                    rhs_designator_end
+                    if protected_end is None
+                    else max(protected_end, rhs_designator_end)
+                )
 
         boundary_depths = [depth_after[i - 1] for i in range(1, fit_upto + 1)]
         unique_depths = sorted(set(boundary_depths))

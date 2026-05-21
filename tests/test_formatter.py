@@ -1680,6 +1680,28 @@ class TestArgListExpansion:
         assert not any("t2bar(a, i, b, &" in line for line in lines)
         assert any(line.rstrip().endswith("j) / &") for line in lines)
 
+    def test_deep_assignment_keeps_first_rhs_call_before_operator_split(self):
+        src = (
+            "subroutine s\n"
+            "do i = 1, n\n"
+            "do j = 1, n\n"
+            "do a = 1, n\n"
+            "do b = 1, n\n"
+            "wf%t2(aibj) = g_aibj(b, j, a, i) / "
+            "(eps_ai + wf%orbital_energies(j) - "
+            "wf%orbital_energies(b + wf%n_o))\n"
+            "end do\n"
+            "end do\n"
+            "end do\n"
+            "end do\n"
+            "end subroutine s\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+        assert not any(line.rstrip().endswith("= &") for line in lines)
+        assert any(line.rstrip().endswith("g_aibj(b, j, a, i) / &") for line in lines)
+        assert all(len(line) <= 110 for line in lines)
+
     def test_operator_split_preferred_over_exploding_call_before_division(self):
         src = (
             "internal_fraction = get_l2_norm(X_internal, wf%n_cc2_v * wf%n_cc2_o) / "
