@@ -1497,6 +1497,39 @@ class TestArgListExpansion:
         )
         assert not any(line.lstrip().startswith(") result(this)") for line in lines)
 
+    def test_function_header_keeps_close_paren_with_final_argument_before_bind(self):
+        src = (
+            "function et_scc_cc_backend_get_gradient_matrix(backend_handle, values, "
+            'rows, cols) bind(C, name = "et_scc_cc_backend_get_gradient_matrix") '
+            "result(status)\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+
+        assert any(line.lstrip() == "cols) &" for line in lines)
+        assert any(
+            line.lstrip()
+            == 'bind(C, name = "et_scc_cc_backend_get_gradient_matrix") result(status)'
+            for line in lines
+        )
+        assert not any(line.lstrip().startswith(") bind") for line in lines)
+
+    def test_subroutine_header_keeps_close_paren_with_final_argument_before_bind(self):
+        src = (
+            "subroutine et_scc_cc_backend_get_gradient_matrix(backend_handle, "
+            "values, rows, cols) bind(C, name = "
+            '"et_scc_cc_backend_get_gradient_matrix")\n'
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+
+        assert any(line.lstrip() == "cols) &" for line in lines)
+        assert any(
+            line.lstrip() == 'bind(C, name = "et_scc_cc_backend_get_gradient_matrix")'
+            for line in lines
+        )
+        assert not any(line.lstrip().startswith(") bind") for line in lines)
+
     def test_trailing_comment_on_close_line(self):
         src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
         result = fmt(src, line_length=40)
@@ -1646,6 +1679,28 @@ class TestArgListExpansion:
         lines = result.splitlines()
         assert not any("t2bar(a, i, b, &" in line for line in lines)
         assert any(line.rstrip().endswith("j) / &") for line in lines)
+
+    def test_deep_assignment_keeps_first_rhs_call_before_operator_split(self):
+        src = (
+            "subroutine s\n"
+            "do i = 1, n\n"
+            "do j = 1, n\n"
+            "do a = 1, n\n"
+            "do b = 1, n\n"
+            "wf%t2(aibj) = g_aibj(b, j, a, i) / "
+            "(eps_ai + wf%orbital_energies(j) - "
+            "wf%orbital_energies(b + wf%n_o))\n"
+            "end do\n"
+            "end do\n"
+            "end do\n"
+            "end do\n"
+            "end subroutine s\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+        assert not any(line.rstrip().endswith("= &") for line in lines)
+        assert any(line.rstrip().endswith("g_aibj(b, j, a, i) / &") for line in lines)
+        assert all(len(line) <= 110 for line in lines)
 
     def test_operator_split_preferred_over_exploding_call_before_division(self):
         src = (
