@@ -2336,3 +2336,16 @@ class TestIdempotency:
         once = fmt(source)
         twice = fmt(once)
         assert once == twice
+
+    def test_multiline_declaration_comments_attach_to_last_entity_on_line(self):
+        source = (
+            "integer(kind=DefInt) :: it, &  ! label of trajectories\n"
+            "                        jt, ic, &  ! centroid's labels\n"
+            "                        jc, is, &  ! state labels\n"
+            "                        js\n"
+        )
+        once = fmt(source, line_length=110)
+        twice = fmt(once, line_length=110)
+        assert once == twice
+        assert "jt, ic, &  ! centroid's labels" in once
+        assert "jc, is, &  ! state labels" in once

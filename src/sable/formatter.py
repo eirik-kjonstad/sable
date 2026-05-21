@@ -1340,6 +1340,15 @@ def _declaration_entity_comment_suffixes(
 
     entity_comments: list[list[Token]] = [[] for _ in decl.entities]
     for cmt in sorted(inline_comments, key=lambda tok: (tok.line, tok.col)):
+        same_line_preceding_entities = [
+            idx
+            for idx, entity in enumerate(decl.entities)
+            if any(tok.line == cmt.line and tok.col < cmt.col for tok in entity)
+        ]
+        if same_line_preceding_entities:
+            entity_comments[same_line_preceding_entities[-1]].append(cmt)
+            continue
+
         attached = False
         for idx, (start, end) in enumerate(entity_line_spans):
             if start <= cmt.line <= end:
