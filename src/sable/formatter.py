@@ -273,6 +273,8 @@ def _needs_space_before(
         return False
     if pk == TokenKind.OP_POWER or ck == TokenKind.OP_POWER:
         return False
+    if _is_legacy_type_selector_boundary(prev_prev, prev, curr):
+        return False
 
     # Space after comma
     if pk == TokenKind.COMMA:
@@ -823,6 +825,16 @@ _DECL_TYPE_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
+_LEGACY_STAR_TYPE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "integer",
+        "real",
+        "complex",
+        "logical",
+        "character",
+    }
+)
+
 _DECL_ATTRIBUTE_ORDER: dict[str, int] = {
     "dimension": 0,
     "codimension": 1,
@@ -901,6 +913,61 @@ def _consume_paren_group(tokens: list[Token], start: int) -> int:
     return start
 
 
+def _is_legacy_type_keyword(token: Token | None) -> bool:
+    return (
+        token is not None
+        and token.kind == TokenKind.KEYWORD
+        and token.text.lower() in _LEGACY_STAR_TYPE_KEYWORDS
+    )
+
+
+def _is_double_precision_keyword_pair(
+    first: Token | None, second: Token | None
+) -> bool:
+    return (
+        first is not None
+        and second is not None
+        and first.kind == TokenKind.KEYWORD
+        and second.kind == TokenKind.KEYWORD
+        and first.text.lower() == "double"
+        and second.text.lower() == "precision"
+    )
+
+
+def _consume_legacy_type_selector(tokens: list[Token], start: int) -> int | None:
+    """Consume legacy ``*kind``/``*len`` selectors like ``real*8``."""
+    if start >= len(tokens) or tokens[start].kind != TokenKind.OP_STAR:
+        return None
+    if start + 1 >= len(tokens):
+        return None
+
+    next_tok = tokens[start + 1]
+    if next_tok.kind == TokenKind.INTEGER:
+        return start + 2
+    if next_tok.kind == TokenKind.LPAREN:
+        next_i = _consume_paren_group(tokens, start + 1)
+        return next_i if next_i != start + 1 else None
+    return None
+
+
+def _is_legacy_type_selector_boundary(
+    prev_prev: Token | None, prev: Token | None, curr: Token
+) -> bool:
+    if prev is None:
+        return False
+    if curr.kind == TokenKind.OP_STAR:
+        return _is_legacy_type_keyword(prev) or _is_double_precision_keyword_pair(
+            prev_prev, prev
+        )
+    if prev.kind == TokenKind.OP_STAR:
+        return _is_legacy_type_keyword(prev_prev) or (
+            prev_prev is not None
+            and prev_prev.kind == TokenKind.KEYWORD
+            and prev_prev.text.lower() == "precision"
+        )
+    return False
+
+
 def _type_spec_end(tokens: list[Token]) -> int | None:
     if not tokens or tokens[0].kind != TokenKind.KEYWORD:
         return None
@@ -922,6 +989,11 @@ def _type_spec_end(tokens: list[Token]) -> int | None:
     if i < len(tokens) and tokens[i].kind == TokenKind.LPAREN:
         next_i = _consume_paren_group(tokens, i)
         if next_i == i:
+            return None
+        i = next_i
+    elif i < len(tokens) and tokens[i].kind == TokenKind.OP_STAR:
+        next_i = _consume_legacy_type_selector(tokens, i)
+        if next_i is None:
             return None
         i = next_i
 
@@ -1243,6 +1315,139 @@ def _try_wrap_declaration_entity_list(
 
         if idx == start_idx:
             return None
+
+    return lines
+
+
+def _declaration_entity_comment_suffixes(
+    decl: _DeclarationParts,
+    body: list[Token],
+    comment: Token | None,
+) -> list[str]:
+    inline_comments: list[Token] = [
+        tok
+        for tok in body
+        if tok.kind == TokenKind.COMMENT and not re.fullmatch(r"!\s*", tok.text)
+    ]
+    if comment is not None and not re.fullmatch(r"!\s*", comment.text):
+        inline_comments.append(comment)
+
+    entity_line_spans: list[tuple[int, int]] = []
+    for entity in decl.entities:
+        entity_line_spans.append(
+            (min(tok.line for tok in entity), max(tok.line for tok in entity))
+        )
+
+    entity_comments: list[list[Token]] = [[] for _ in decl.entities]
+    for cmt in sorted(inline_comments, key=lambda tok: (tok.line, tok.col)):
+        attached = False
+        for idx, (start, end) in enumerate(entity_line_spans):
+            if start <= cmt.line <= end:
+                entity_comments[idx].append(cmt)
+                attached = True
+                break
+        if attached:
+            continue
+
+        previous_idx: int | None = None
+        for idx, (_, end) in enumerate(entity_line_spans):
+            if end <= cmt.line:
+                previous_idx = idx
+            else:
+                break
+        target_idx = 0 if previous_idx is None else previous_idx
+        entity_comments[target_idx].append(cmt)
+
+    return [
+        "".join(f"  {tok.text}" for tok in comment_tokens)
+        for comment_tokens in entity_comments
+    ]
+
+
+def _ends_with_top_level_comma(tokens: list[Token]) -> bool:
+    code_tokens = [tok for tok in tokens if tok.kind != TokenKind.COMMENT]
+    return bool(code_tokens and code_tokens[-1].kind == TokenKind.COMMA)
+
+
+def _try_wrap_commented_declaration_entity_list(
+    decl: _DeclarationParts,
+    body_with_comments: list[Token],
+    comment: Token | None,
+    indent: str,
+    cfg: FormatConfig,
+    force_trailing_continuation: bool,
+) -> list[str] | None:
+    """Preserve entity-level inline comments in multiline declarations."""
+    if len(decl.entities) <= 1:
+        return None
+
+    code_tokens = [tok for tok in body_with_comments if tok.kind != TokenKind.COMMENT]
+    if len({tok.line for tok in code_tokens}) <= 1:
+        return None
+
+    comment_suffixes = _declaration_entity_comment_suffixes(
+        decl, body_with_comments, comment
+    )
+    if not any(comment_suffixes):
+        return None
+
+    header_tokens = decl.prefix_tokens + [
+        _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
+    ]
+    header = indent + _render_tokens(header_tokens)
+    first_prefix = header + " "
+    continuation_indent = " " * len(header + " ")
+    trailing_comma_continuation = _ends_with_top_level_comma(body_with_comments)
+    rendered_entities = [_render_tokens(entity) for entity in decl.entities]
+    n = len(rendered_entities)
+
+    def _build_line(prefix: str, start: int, end: int) -> str:
+        is_last = end == n - 1
+        suffix = comment_suffixes[end]
+        needs_comma = not is_last or (
+            force_trailing_continuation and trailing_comma_continuation
+        )
+        line = prefix + ", ".join(rendered_entities[start : end + 1])
+        if needs_comma:
+            line += ","
+        if not is_last or force_trailing_continuation:
+            line += " &"
+        line += suffix
+        return line
+
+    idx = 0
+    lines: list[str] = []
+    header_emitted = False
+
+    while idx < n:
+        prefix = (
+            first_prefix if idx == 0 and not header_emitted else continuation_indent
+        )
+        end = idx
+        best_end: int | None = None
+
+        while end < n:
+            candidate = _build_line(prefix, idx, end)
+            if len(candidate) <= cfg.line_length:
+                best_end = end
+                if comment_suffixes[end]:
+                    break
+                end += 1
+                continue
+            break
+
+        if best_end is None:
+            if idx == 0 and not header_emitted:
+                header_line = header + " &"
+                if len(header_line) <= cfg.line_length:
+                    lines.append(header_line)
+                    header_emitted = True
+                    continue
+            best_end = idx
+
+        line = _build_line(prefix, idx, best_end)
+        lines.append(line)
+        idx = best_end + 1
 
     return lines
 
@@ -2803,9 +3008,11 @@ def render_logical_line(
             comment = None
 
     force_trailing_continuation = False
-    while body and body[-1].kind == TokenKind.CONTINUATION:
+    continuation_probe = list(body)
+    while continuation_probe and continuation_probe[-1].kind == TokenKind.COMMENT:
+        continuation_probe.pop()
+    if continuation_probe and continuation_probe[-1].kind == TokenKind.CONTINUATION:
         force_trailing_continuation = True
-        body = body[:-1]
 
     # Normalise away any leading continuation marker. Sable emits continuation
     # markers in trailing position only.
@@ -2841,6 +3048,17 @@ def render_logical_line(
         return pointer_decl
 
     if decl is not None and len(decl.entities) > 1:
+        commented_decl = _try_wrap_commented_declaration_entity_list(
+            decl,
+            raw_body,
+            raw_comment,
+            indent,
+            cfg,
+            force_trailing_continuation=force_trailing_continuation,
+        )
+        if commented_decl is not None:
+            return commented_decl
+
         should_explode = len(code_line) > cfg.line_length
         if should_explode:
             wrapped_decl = _try_wrap_declaration_entity_list(
