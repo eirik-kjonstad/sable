@@ -1497,6 +1497,39 @@ class TestArgListExpansion:
         )
         assert not any(line.lstrip().startswith(") result(this)") for line in lines)
 
+    def test_function_header_keeps_close_paren_with_final_argument_before_bind(self):
+        src = (
+            "function et_scc_cc_backend_get_gradient_matrix(backend_handle, values, "
+            'rows, cols) bind(C, name = "et_scc_cc_backend_get_gradient_matrix") '
+            "result(status)\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+
+        assert any(line.lstrip() == "cols) &" for line in lines)
+        assert any(
+            line.lstrip()
+            == 'bind(C, name = "et_scc_cc_backend_get_gradient_matrix") result(status)'
+            for line in lines
+        )
+        assert not any(line.lstrip().startswith(") bind") for line in lines)
+
+    def test_subroutine_header_keeps_close_paren_with_final_argument_before_bind(self):
+        src = (
+            "subroutine et_scc_cc_backend_get_gradient_matrix(backend_handle, "
+            "values, rows, cols) bind(C, name = "
+            '"et_scc_cc_backend_get_gradient_matrix")\n'
+        )
+        result = fmt(src, line_length=100)
+        lines = result.splitlines()
+
+        assert any(line.lstrip() == "cols) &" for line in lines)
+        assert any(
+            line.lstrip() == 'bind(C, name = "et_scc_cc_backend_get_gradient_matrix")'
+            for line in lines
+        )
+        assert not any(line.lstrip().startswith(") bind") for line in lines)
+
     def test_trailing_comment_on_close_line(self):
         src = "call foo(long_arg_one, long_arg_two, long_arg_three) ! important\n"
         result = fmt(src, line_length=40)

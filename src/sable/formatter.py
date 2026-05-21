@@ -1637,6 +1637,38 @@ def _find_explodable_arg_list_span(
     return None
 
 
+def _is_procedure_header_arg_list(
+    tokens: list[Token], open_idx: int, tail_tokens: list[Token]
+) -> bool:
+    """Return True for a function/subroutine dummy-argument list with clauses."""
+    if not tail_tokens:
+        return False
+    first_tail = tail_tokens[0]
+    if first_tail.kind != TokenKind.KEYWORD or first_tail.text.lower() not in {
+        "bind",
+        "result",
+    }:
+        return False
+
+    depth = 0
+    found_procedure_keyword = False
+    for tok in tokens[:open_idx]:
+        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
+            depth += 1
+            continue
+        if tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
+            depth = max(0, depth - 1)
+            continue
+        if (
+            depth == 0
+            and tok.kind == TokenKind.KEYWORD
+            and tok.text.lower() in {"function", "subroutine"}
+        ):
+            found_procedure_keyword = True
+
+    return found_procedure_keyword
+
+
 def _greedy_split_arg(
     arg_toks: list[Token],
     first_indent: str,
@@ -2268,6 +2300,10 @@ def _try_expand_arg_list(
     prefix_with_open = _render_tokens(code_body[: open_idx + 1])
     close_tail_tokens = code_body[close_idx + 1 :]
     close_piece = _render_tokens([code_body[close_idx]] + close_tail_tokens)
+    close_paren_piece = _render_tokens([code_body[close_idx]])
+    procedure_header_with_tail = _is_procedure_header_arg_list(
+        code_body, open_idx, close_tail_tokens
+    )
     can_hang_open = len(arg_groups) >= 2
     first_arg_column_indent = " " * (len(indent) + len(prefix_with_open))
     default_continuation_indent = close_indent + " " * cfg.indent_width
@@ -2364,6 +2400,7 @@ def _try_expand_arg_list(
     # "&" (invalid Fortran).
     lines: list[str] = []
     inline_close = False
+    tail_after_inline_close = False
     close_comment_texts = [tok.text for tok in close_line_comments]
     close_comment_anchor = close_line_comments[0] if close_line_comments else None
     if start_arg_idx == 1 and content_lines:
@@ -2376,6 +2413,14 @@ def _try_expand_arg_list(
             inline_close = True
             content_lines[-1] = inline_candidate
             content_comments[-1] = inline_comment
+        elif procedure_header_with_tail:
+            inline_paren_candidate = content_lines[-1] + close_paren_piece
+            if (
+                len(inline_paren_candidate) + len(content_comments[-1]) + 2
+                <= cfg.line_length
+            ):
+                content_lines[-1] = inline_paren_candidate
+                tail_after_inline_close = True
         elif content_comments[-1]:
             final_comment = content_comments[-1].strip()
             if final_comment:
@@ -2396,6 +2441,17 @@ def _try_expand_arg_list(
             lines.append(content + " &" + comment_suffix)
 
     if inline_close:
+        return lines
+
+    if tail_after_inline_close:
+        tail_tokens = close_tail_tokens
+        if close_comment_texts and close_comment_anchor is not None:
+            close_comment_text = "  ".join(close_comment_texts)
+            tail_tokens = tail_tokens + [
+                _make_token(TokenKind.COMMENT, close_comment_text, close_comment_anchor)
+            ]
+        tail_indent = indent + " " * cfg.indent_width
+        lines.extend(render_logical_line(tail_tokens, tail_indent, cfg))
         return lines
 
     # Closing line(s): start with ')' at the callee anchor, then any suffix tokens
