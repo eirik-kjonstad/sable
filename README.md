@@ -1,18 +1,10 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/eirik-kjonstad/sable/v0.1.3/assets/sable-logo.svg" alt="Sable logo" width="420">
   <br>
-  <a href="https://github.com/eirik-kjonstad/sable">
-    <img src="assets/sable-badge.svg" alt="Code style: Sable">
-  </a>
-  <a href="https://pypi.org/project/sable-fortran/">
-    <img src="https://img.shields.io/pypi/v/sable-fortran.svg" alt="PyPI version">
-  </a>
-  <a href="https://github.com/eirik-kjonstad/sable/actions/workflows/ci.yml">
-    <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776ab.svg" alt="Python 3.10, 3.11, and 3.12">
-  </a>
-  <a href="https://github.com/eirik-kjonstad/sable/blob/main/LICENSE">
-    <img src="https://img.shields.io/pypi/l/sable-fortran.svg" alt="License: MIT">
-  </a>
+  <a href="https://github.com/eirik-kjonstad/sable"><img src="assets/sable-badge.svg" alt="Code style: Sable"></a>
+  <a href="https://pypi.org/project/sable-fortran/"><img src="https://img.shields.io/pypi/v/sable-fortran.svg" alt="PyPI version"></a>
+  <a href="https://github.com/eirik-kjonstad/sable/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776ab.svg" alt="Python 3.10, 3.11, and 3.12"></a>
+  <a href="https://github.com/eirik-kjonstad/sable/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/sable-fortran.svg" alt="License: MIT"></a>
 </p>
 
 An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/black).
@@ -28,15 +20,6 @@ to identify code issues.
 
 ```bash
 pip install sable-fortran
-```
-
-## Badges
-
-```markdown
-[![Code style: Sable](https://raw.githubusercontent.com/eirik-kjonstad/sable/main/assets/sable-badge.svg)](https://github.com/eirik-kjonstad/sable)
-[![PyPI version](https://img.shields.io/pypi/v/sable-fortran.svg)](https://pypi.org/project/sable-fortran/)
-[![Python 3.10, 3.11, and 3.12](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776ab.svg)](https://github.com/eirik-kjonstad/sable/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/pypi/l/sable-fortran.svg)](https://github.com/eirik-kjonstad/sable/blob/main/LICENSE)
 ```
 
 ## Quick Start
@@ -157,6 +140,12 @@ generate_baseline = false
 ```
 
 CLI flags override `pyproject.toml` defaults.
+
+## Badge
+
+```markdown
+[![Code style: Sable](https://raw.githubusercontent.com/eirik-kjonstad/sable/main/assets/sable-badge.svg)](https://github.com/eirik-kjonstad/sable)
+```
 
 ## License
 
