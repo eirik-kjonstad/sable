@@ -125,6 +125,28 @@ File-wide:
 
 ## Configuration
 
+Formatter options are CLI flags:
+
+```bash
+sable format --line-length 88 src/
+```
+
+| Option | Default | Values | Applies to |
+| --- | ---: | --- | --- |
+| `--line-length` | `100` | integer | `format`, `check` |
+| `--indent-width` | `3` | integer | `format`, `check` |
+| `--keyword-case` | `lower` | `lower`, `upper` | `format`, `check` |
+| `--end-keyword-form` | `spaced` | `spaced`, `compact` | `format`, `check` |
+| `--no-normalize-operators` | off | flag | `format`, `check` |
+| `rule_set` / `--rule-set` | `all` | `style`, `lint`, `all` | `check` |
+| `select` / `--select` | `[]` | rule codes | `check` |
+| `ignore` / `--ignore` | `[]` | rule codes | `check` |
+| `output_format` / `--output-format` | `text` | `text`, `json`, `sarif`, `gitlab-codequality` | `check` |
+| `baseline` / `--baseline` | unset | path | `check` |
+| `fix` / `--fix` | `false` | boolean | `check` |
+| `unsafe_fixes` / `--unsafe-fixes` | `false` | boolean | `check` |
+| `generate_baseline` / `--generate-baseline` | `false` | boolean | `check` |
+
 Example `pyproject.toml`:
 
 ```toml
@@ -139,7 +161,7 @@ unsafe_fixes = false
 generate_baseline = false
 ```
 
-CLI flags override `pyproject.toml` defaults.
+For `check`, CLI flags override `pyproject.toml` defaults.
 
 ## Badge
 
