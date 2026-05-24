@@ -3,7 +3,7 @@
   <br>
   <a href="https://github.com/eirik-kjonstad/sable"><img src="assets/sable-badge.svg" alt="Code style: Sable"></a>
   <a href="https://pypi.org/project/sable-fortran/"><img src="https://img.shields.io/pypi/v/sable-fortran.svg" alt="PyPI version"></a>
-  <a href="https://github.com/eirik-kjonstad/sable/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-3776ab.svg" alt="Python 3.10, 3.11, and 3.12"></a>
+  <a href="https://github.com/eirik-kjonstad/sable/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14%20%7C%203.15--dev-3776ab.svg" alt="Python 3.10 through 3.15-dev"></a>
   <a href="https://github.com/eirik-kjonstad/sable/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/sable-fortran.svg" alt="License: MIT"></a>
 </p>
 
