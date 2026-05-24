@@ -381,6 +381,38 @@ class TestCommaSplitting:
             assert not line.lstrip().startswith(","), f"leading comma in: {line!r}"
 
 
+class TestFormatStatements:
+    def test_format_edit_descriptors_stay_compact(self):
+        source = (
+            "3     format(ES23.15, 22x, a) ! real      format with label\n"
+            "5     format(2(2x, i6), 24x, a) ! integer   format with label\n"
+            "6     format(1x, l1, 38x, a) ! logical   format with label\n"
+            "11    format(3(1x, ES23.15E3)) ! 3N vector format\n"
+            "13    format(6(1x, f12.4))\n"
+        )
+        result = fmt(source)
+
+        assert "3 format(ES23.15, 22x, a)" in result
+        assert "5 format(2(2x, i6), 24x, a)" in result
+        assert "6 format(1x, l1, 38x, a)" in result
+        assert "11 format(3(1x, ES23.15E3))" in result
+        assert "13 format(6(1x, f12.4))" in result
+        assert "ES23 .15" not in result
+        assert "22 x" not in result
+        assert "f12 .4" not in result
+
+    def test_labelled_format_statement_uses_block_indentation(self):
+        source = (
+            "subroutine write_values\n"
+            "3     format(ES23.15, 22x, a)\n"
+            "end subroutine write_values\n"
+        )
+        result = fmt(source)
+        lines = result.splitlines()
+
+        assert lines[1] == "   3 format(ES23.15, 22x, a)"
+
+
 class TestIndentation:
     def test_do_body_indented(self):
         source = "do i = 1, 10\nx = i\nend do"
@@ -1089,6 +1121,22 @@ class TestContinuationWithComments:
             "real(kind=DefReal) :: ModPot, &  " "!< External potential, for SMD, etc."
         )
         assert not any(line.rstrip().endswith(":: &") for line in lines)
+
+    def test_multiline_declaration_long_entity_comment_avoids_early_marker(self):
+        src = (
+            "integer(kind=DefInt), public :: &\n"
+            "                                   inIRestart, &  !> Determines whether "
+            "this is a restart (1 = restart, 0 = not restart)\n"
+            "                                   RestartStep  ! Number of steps "
+            "between archived restarts\n"
+        )
+        result = fmt(src)
+        lines = result.splitlines()
+
+        assert lines[0].startswith("integer(kind=DefInt), public :: inIRestart, &")
+        assert "!> Determines whether this is a restart" in lines[0]
+        assert not any(line.rstrip().endswith(":: &") for line in lines)
+        assert fmt(result) == result
 
     def test_single_line_declaration_trailing_comment_does_not_explode(self):
         result = fmt("integer :: a, b ! trailing\n")

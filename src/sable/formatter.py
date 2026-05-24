@@ -1410,9 +1410,8 @@ def _try_wrap_commented_declaration_entity_list(
     rendered_entities = [_render_tokens(entity) for entity in decl.entities]
     n = len(rendered_entities)
 
-    def _build_line(prefix: str, start: int, end: int) -> str:
+    def _build_code_line(prefix: str, start: int, end: int) -> str:
         is_last = end == n - 1
-        suffix = comment_suffixes[end]
         needs_comma = not is_last or (
             force_trailing_continuation and trailing_comma_continuation
         )
@@ -1421,6 +1420,11 @@ def _try_wrap_commented_declaration_entity_list(
             line += ","
         if not is_last or force_trailing_continuation:
             line += " &"
+        return line
+
+    def _build_line(prefix: str, start: int, end: int) -> str:
+        suffix = comment_suffixes[end]
+        line = _build_code_line(prefix, start, end)
         line += suffix
         return line
 
@@ -1446,13 +1450,16 @@ def _try_wrap_commented_declaration_entity_list(
             break
 
         if best_end is None:
-            if idx == 0 and not header_emitted:
+            if len(_build_code_line(prefix, idx, idx)) <= cfg.line_length:
+                best_end = idx
+            elif idx == 0 and not header_emitted:
                 header_line = header + " &"
                 if len(header_line) <= cfg.line_length:
                     lines.append(header_line)
                     header_emitted = True
                     continue
-            best_end = idx
+            else:
+                best_end = idx
 
         line = _build_line(prefix, idx, best_end)
         lines.append(line)
@@ -1499,6 +1506,51 @@ def _render_tokens(tokens: list[Token], compact_named_assign: bool = False) -> s
         prev_prev = prev
         prev = tok
     return "".join(parts)
+
+
+def _format_statement_keyword_index(tokens: list[Token]) -> int | None:
+    """Return the index of a FORMAT statement keyword after an optional label."""
+    non_comment = [tok for tok in tokens if tok.kind != TokenKind.COMMENT]
+    if len(non_comment) < 2:
+        return None
+
+    idx = 0
+    if non_comment[idx].kind in (TokenKind.INTEGER, TokenKind.LABEL):
+        idx += 1
+    if (
+        idx < len(non_comment)
+        and non_comment[idx].kind == TokenKind.KEYWORD
+        and non_comment[idx].text.lower() == "format"
+    ):
+        return idx
+    return None
+
+
+def _render_format_statement(
+    body: list[Token],
+    comment: Token | None,
+    indent: str,
+) -> str | None:
+    """Render a FORMAT statement without expression-style descriptor spacing."""
+    format_idx = _format_statement_keyword_index(body)
+    if format_idx is None:
+        return None
+    if format_idx + 1 >= len(body) or body[format_idx + 1].kind != TokenKind.LPAREN:
+        return None
+
+    prefix = _render_tokens(body[: format_idx + 1])
+    pieces: list[str] = []
+    prev: Token | None = None
+    for tok in body[format_idx + 1 :]:
+        if tok.kind == TokenKind.CONTINUATION:
+            continue
+        if prev is not None and prev.kind == TokenKind.COMMA:
+            pieces.append(" ")
+        pieces.append(tok.text)
+        prev = tok
+
+    comment_str = ("  " + comment.text) if comment else ""
+    return indent + prefix + "".join(pieces) + comment_str
 
 
 def _find_outermost_paren_group(tokens: list[Token]) -> tuple[int, int] | None:
@@ -3036,6 +3088,10 @@ def render_logical_line(
     expansion_inputs = [(raw_body, raw_comment)]
     if body != raw_body or comment != raw_comment:
         expansion_inputs.append((body, comment))
+
+    format_statement = _render_format_statement(body, comment, indent)
+    if format_statement is not None:
+        return [format_statement]
 
     # Build the token string with spacing
     line_body = _render_tokens(body)
