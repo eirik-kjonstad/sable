@@ -5,6 +5,15 @@ from __future__ import annotations
 import bisect
 import re
 
+from ..analysis import (
+    COMPACT_TO_SPACED_END_KEYWORDS as _COMPACT_TO_SPACED,
+)
+from ..analysis import (
+    canonicalise_declaration_tokens as _canonicalise_declaration_tokens,
+)
+from ..analysis import (
+    parse_declaration as _parse_declaration,
+)
 from ..diagnostics import (
     Diagnostic,
     Fix,
@@ -13,12 +22,7 @@ from ..diagnostics import (
     Severity,
     TextEdit,
 )
-from ..formatter import (
-    _COMPACT_TO_SPACED,
-    _canonicalise_declaration_tokens,
-    _parse_declaration,
-    _render_tokens,
-)
+from ..token_render import render_tokens as _render_tokens
 from ..tokens import Token, TokenKind
 
 _OLD_TO_NEW_REL_OP: dict[str, str] = {
