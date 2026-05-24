@@ -132,42 +132,43 @@ class LexError(Exception):
 def tokenize(source: str) -> list[Token]:
     """Lex *source* and return a flat list of Tokens."""
     tokens: list[Token] = []
+    append = tokens.append
     line = 1
     line_start = 0
 
     for m in _TOKEN_RE.finditer(source):
-        col = m.start() - line_start + 1
         kind_name = m.lastgroup
-        text = m.group()
-
         if kind_name == "SKIP":
             continue
 
+        start = m.start()
+        col = start - line_start + 1
+        text = m.group()
+
         if kind_name == "NEWLINE":
-            tokens.append(Token(TokenKind.NEWLINE, text, line, col))
+            append(Token(TokenKind.NEWLINE, text, line, col))
             line += 1
             line_start = m.end()
             continue
 
         if kind_name == "DIRECTIVE":
-            tokens.append(Token(TokenKind.DIRECTIVE, text, line, col))
+            append(Token(TokenKind.DIRECTIVE, text, line, col))
             continue
 
         if kind_name == "COMMENT":
-            tokens.append(Token(TokenKind.COMMENT, text, line, col))
+            append(Token(TokenKind.COMMENT, text, line, col))
             continue
 
         if kind_name == "NAMED_OP":
-            kind = _NAMED_OP_MAP[text.lower()]
-            tokens.append(Token(kind, text.lower(), line, col))
+            lower = text.lower()
+            kind = _NAMED_OP_MAP[lower]
+            append(Token(kind, lower, line, col))
             continue
 
         if kind_name == "NAME":
             lower = text.lower()
             kind = TokenKind.KEYWORD if lower in KEYWORDS else TokenKind.NAME
-            tokens.append(
-                Token(kind, lower if kind == TokenKind.KEYWORD else text, line, col)
-            )
+            append(Token(kind, lower if kind == TokenKind.KEYWORD else text, line, col))
             continue
 
         if kind_name == "STRING":
@@ -180,22 +181,23 @@ def tokenize(source: str) -> list[Token]:
             # value per the Fortran standard, so removing them is semantically
             # safe.  Update the line/column tracking for the consumed newlines.
             if "\n" in text:
+                raw_text = text
                 text = re.sub(r"&[ \t]*\n[ \t]*&", "", text)
-                line += m.group().count("\n")
-                last_nl = m.group().rfind("\n")
-                line_start = m.start() + last_nl + 1
-            tokens.append(Token(TokenKind.STRING, text, line, col))
+                line += raw_text.count("\n")
+                last_nl = raw_text.rfind("\n")
+                line_start = start + last_nl + 1
+            append(Token(TokenKind.STRING, text, line, col))
             continue
 
         if kind_name == "LOGICAL":
-            tokens.append(Token(TokenKind.LOGICAL, text.upper(), line, col))
+            append(Token(TokenKind.LOGICAL, text.upper(), line, col))
             continue
 
         if kind_name in _PATTERN_TO_KIND:
-            tokens.append(Token(_PATTERN_TO_KIND[kind_name], text, line, col))
+            append(Token(_PATTERN_TO_KIND[kind_name], text, line, col))
             continue
 
-    tokens.append(Token(TokenKind.EOF, "", line, 0))
+    append(Token(TokenKind.EOF, "", line, 0))
     return tokens
 
 

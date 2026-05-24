@@ -78,6 +78,14 @@ _OLD_TO_NEW_OP: dict[str, str] = {
     ".gt.": ">",
     ".ge.": ">=",
 }
+_NEW_OP_TO_KIND: dict[str, TokenKind] = {
+    "==": TokenKind.OP_EQ,
+    "/=": TokenKind.OP_NEQ,
+    "<": TokenKind.OP_LT,
+    "<=": TokenKind.OP_LE,
+    ">": TokenKind.OP_GT,
+    ">=": TokenKind.OP_GE,
+}
 
 # Operators that require spaces on both sides
 _BINARY_OP_KINDS: frozenset[TokenKind] = frozenset(
@@ -199,15 +207,7 @@ def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
     replacement = _OLD_TO_NEW_OP.get(token.text.lower())
     if replacement is None:
         return token
-    kind_map = {
-        "==": TokenKind.OP_EQ,
-        "/=": TokenKind.OP_NEQ,
-        "<": TokenKind.OP_LT,
-        "<=": TokenKind.OP_LE,
-        ">": TokenKind.OP_GT,
-        ">=": TokenKind.OP_GE,
-    }
-    return Token(kind_map[replacement], replacement, token.line, token.col)
+    return Token(_NEW_OP_TO_KIND[replacement], replacement, token.line, token.col)
 
 
 def normalise_logical_literal(token: Token) -> Token:
@@ -1027,15 +1027,16 @@ def _join_comma_segments(segments: list[list[Token]], anchor: Token) -> list[Tok
 
 
 def _parse_declaration(tokens: list[Token]) -> _DeclarationParts | None:
+    if not tokens or tokens[0].kind != TokenKind.KEYWORD:
+        return None
+    if tokens[0].text.lower() not in _DECL_TYPE_KEYWORDS:
+        return None
+
     core = IndentTracker._core_tokens(tokens)
     if not core or len(core) != len(tokens):
         return None
-    if core[0].kind != TokenKind.KEYWORD:
-        return None
 
     first = core[0].text.lower()
-    if first not in _DECL_TYPE_KEYWORDS:
-        return None
     if IndentTracker._is_block_opener(first, core):
         return None
 
@@ -3101,16 +3102,17 @@ def render_logical_line(
     full_line = code_line + comment_str
 
     decl = _parse_declaration(body)
-    pointer_decl = _try_split_single_entity_pointer_declaration(
-        body,
-        comment,
-        indent,
-        cfg,
-        continuation_step=continuation_step,
-        force_trailing_continuation=force_trailing_continuation,
-    )
-    if pointer_decl is not None and len(code_line) > cfg.line_length:
-        return pointer_decl
+    if len(code_line) > cfg.line_length:
+        pointer_decl = _try_split_single_entity_pointer_declaration(
+            body,
+            comment,
+            indent,
+            cfg,
+            continuation_step=continuation_step,
+            force_trailing_continuation=force_trailing_continuation,
+        )
+        if pointer_decl is not None:
+            return pointer_decl
 
     if decl is not None and len(decl.entities) > 1:
         commented_decl = _try_wrap_commented_declaration_entity_list(
@@ -3412,13 +3414,45 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
     tracker = IndentTracker(cfg.indent_width)
     output_lines: list[str] = []
 
-    # Normalise token-level rules
-    def normalise(tok: Token) -> Token:
-        tok = normalise_keyword_case(tok, cfg)
-        tok = normalise_end_keyword(tok, cfg)
-        tok = normalise_operator(tok, cfg)
-        tok = normalise_logical_literal(tok)
-        return tok
+    # Normalise token-level rules. Keep this inline in the hot path: formatting
+    # large trees visits every token exactly once here.
+    keyword_upper = cfg.keyword_case == "upper"
+
+    def normalise_line(line_tokens: list[Token]) -> list[Token]:
+        normalised: list[Token] = []
+        for tok in line_tokens:
+            kind = tok.kind
+            text = tok.text
+
+            if kind == TokenKind.KEYWORD:
+                if cfg.normalize_keyword_case:
+                    text = text.upper() if keyword_upper else text.lower()
+                if cfg.normalize_end_keywords:
+                    lower = text.lower()
+                    if cfg.end_keyword_form == "spaced" and lower in _COMPACT_TO_SPACED:
+                        text = _COMPACT_TO_SPACED[lower]
+                        if keyword_upper:
+                            text = text.upper()
+                    elif (
+                        cfg.end_keyword_form == "compact"
+                        and lower in _SPACED_TO_COMPACT
+                    ):
+                        text = _SPACED_TO_COMPACT[lower]
+                        if keyword_upper:
+                            text = text.upper()
+            elif kind == TokenKind.LOGICAL:
+                text = text.lower()
+            elif cfg.normalize_operators:
+                replacement = _OLD_TO_NEW_OP.get(text.lower())
+                if replacement is not None:
+                    kind = _NEW_OP_TO_KIND[replacement]
+                    text = replacement
+
+            if kind is tok.kind and text == tok.text:
+                normalised.append(tok)
+            else:
+                normalised.append(Token(kind, text, tok.line, tok.col))
+        return normalised
 
     # Buffer for comment/blank lines awaiting the indentation of the next code line.
     # None entries represent blank lines; str entries are raw comment texts.
@@ -3457,8 +3491,10 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
     next_line_no = 1
 
     def _has_explicit_trailing_continuation(line_tokens: list[Token]) -> bool:
-        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
-        return bool(non_comment and non_comment[-1].kind == TokenKind.CONTINUATION)
+        for tok in reversed(line_tokens):
+            if tok.kind != TokenKind.COMMENT:
+                return tok.kind == TokenKind.CONTINUATION
+        return False
 
     def _is_compiler_directive_comment(line_tokens: list[Token]) -> bool:
         """True for standalone directive comments like `!$OMP ...`."""
@@ -3575,7 +3611,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         if cfg.normalize_end_keywords:
             logical_line = merge_end_keywords(logical_line, cfg)
-        normalised = [normalise(t) for t in logical_line]
+        normalised = normalise_line(logical_line)
         if cfg.canonicalize_declarations:
             normalised = _canonicalise_declaration_tokens(normalised)
 
@@ -3695,13 +3731,15 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
                 continuation_step=continuation_step,
                 prefer_exploded_arg_list=prefer_exploded,
             )
-            exploded_call = _is_exploded_call_render(
-                normalised, physical, indent, prefer_exploded
-            )
-            continued_math_expression = _is_continued_math_expression_render(
-                normalised, physical, indent
-            )
-            needs_expression_spacing = exploded_call or continued_math_expression
+            needs_expression_spacing = False
+            if len(physical) > 1:
+                exploded_call = _is_exploded_call_render(
+                    normalised, physical, indent, prefer_exploded
+                )
+                continued_math_expression = _is_continued_math_expression_render(
+                    normalised, physical, indent
+                )
+                needs_expression_spacing = exploded_call or continued_math_expression
             if needs_expression_spacing and output_lines and output_lines[-1] != "":
                 output_lines.append("")
             output_lines.extend(physical)
