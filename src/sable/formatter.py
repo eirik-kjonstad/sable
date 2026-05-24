@@ -19,6 +19,23 @@ from dataclasses import dataclass
 
 from . import analysis as _analysis
 from . import token_render as _token_render
+from .indentation import IndentTracker
+from .normalization import (
+    merge_end_keywords,
+    normalise_line,
+)
+from .normalization import (
+    normalise_end_keyword as normalise_end_keyword,
+)
+from .normalization import (
+    normalise_keyword_case as normalise_keyword_case,
+)
+from .normalization import (
+    normalise_logical_literal as normalise_logical_literal,
+)
+from .normalization import (
+    normalise_operator as normalise_operator,
+)
 from .tokens import Token, TokenKind
 
 # ---------------------------------------------------------------------------
@@ -66,219 +83,6 @@ class FormatConfig:
 
 
 DEFAULT_CONFIG = FormatConfig()
-
-
-# ---------------------------------------------------------------------------
-# Operator normalisation map
-# ---------------------------------------------------------------------------
-
-_OLD_TO_NEW_OP: dict[str, str] = {
-    ".eq.": "==",
-    ".ne.": "/=",
-    ".lt.": "<",
-    ".le.": "<=",
-    ".gt.": ">",
-    ".ge.": ">=",
-}
-_NEW_OP_TO_KIND: dict[str, TokenKind] = {
-    "==": TokenKind.OP_EQ,
-    "/=": TokenKind.OP_NEQ,
-    "<": TokenKind.OP_LT,
-    "<=": TokenKind.OP_LE,
-    ">": TokenKind.OP_GT,
-    ">=": TokenKind.OP_GE,
-}
-
-# ---------------------------------------------------------------------------
-# Token-level normalisation
-# ---------------------------------------------------------------------------
-
-
-def normalise_keyword_case(token: Token, cfg: FormatConfig) -> Token:
-    """Apply configured keyword casing."""
-    if not cfg.normalize_keyword_case:
-        return token
-    if token.kind != TokenKind.KEYWORD:
-        return token
-    text = token.text.lower() if cfg.keyword_case == "lower" else token.text.upper()
-    return Token(token.kind, text, token.line, token.col)
-
-
-def normalise_end_keyword(token: Token, cfg: FormatConfig) -> Token:
-    """Normalise compact/spaced END keyword forms."""
-    if not cfg.normalize_end_keywords:
-        return token
-    if token.kind != TokenKind.KEYWORD:
-        return token
-    text = token.text.lower()
-    if (
-        cfg.end_keyword_form == "spaced"
-        and text in _analysis.COMPACT_TO_SPACED_END_KEYWORDS
-    ):
-        new_text = _analysis.COMPACT_TO_SPACED_END_KEYWORDS[text]
-        if cfg.keyword_case == "upper":
-            new_text = new_text.upper()
-        return Token(token.kind, new_text, token.line, token.col)
-    if (
-        cfg.end_keyword_form == "compact"
-        and text in _analysis.SPACED_TO_COMPACT_END_KEYWORDS
-    ):
-        new_text = _analysis.SPACED_TO_COMPACT_END_KEYWORDS[text]
-        if cfg.keyword_case == "upper":
-            new_text = new_text.upper()
-        return Token(token.kind, new_text, token.line, token.col)
-    return token
-
-
-def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
-    """Replace old-style relational operators with modern equivalents."""
-    if not cfg.normalize_operators:
-        return token
-    replacement = _OLD_TO_NEW_OP.get(token.text.lower())
-    if replacement is None:
-        return token
-    return Token(_NEW_OP_TO_KIND[replacement], replacement, token.line, token.col)
-
-
-def normalise_logical_literal(token: Token) -> Token:
-    """Canonicalize logical literals to lowercase (.true./.false.)."""
-    if token.kind != TokenKind.LOGICAL:
-        return token
-    return Token(token.kind, token.text.lower(), token.line, token.col)
-
-
-# ---------------------------------------------------------------------------
-# Indentation tracking
-# ---------------------------------------------------------------------------
-
-# Keywords that close an indentation level (decrease before rendering)
-_INDENT_CLOSE: frozenset[str] = frozenset(
-    {
-        "end",
-        "endif",
-        "enddo",
-        "endfunction",
-        "endsubroutine",
-        "endmodule",
-        "endprogram",
-        "endwhere",
-        "endselect",
-        "endinterface",
-        "endtype",
-        "endassociate",
-        "endblock",
-        "endcritical",
-        "endteam",
-        "endenum",
-        "end if",
-        "end do",
-        "end function",
-        "end subroutine",
-        "end module",
-        "end program",
-        "end where",
-        "end select",
-        "end interface",
-        "end type",
-        "end associate",
-        "end block",
-        "end critical",
-        "end team",
-        "end enum",
-        "else",
-        "elseif",
-        "case",
-        "contains",
-    }
-)
-
-
-class IndentTracker:
-    """Track indentation level as we walk logical lines."""
-
-    def __init__(self, indent_width: int) -> None:
-        self.level = 0
-        self.width = indent_width
-        # Per active SELECT construct, track whether a selector branch body is open.
-        self._select_branch_open: list[bool] = []
-
-    def indent(self) -> str:
-        return " " * (self.level * self.width)
-
-    def open(self) -> None:
-        self.level += 1
-
-    def close(self) -> None:
-        self.level = max(0, self.level - 1)
-
-    def process_line(self, line_tokens: list[Token]) -> tuple[str, bool]:
-        """Return (indentation_string, did_close) for a logical line."""
-        if not line_tokens:
-            return self.indent(), False
-
-        non_comment = _analysis.core_tokens(line_tokens)
-        first = _analysis.first_keyword(line_tokens)
-        is_select_branch = _analysis.is_select_branch(non_comment)
-        is_end_select = _analysis.is_end_select(non_comment)
-        did_close = False
-
-        # Selector guards (`case`, `type is`, `class ...`, `rank ...`) close only
-        # the previous selector body, not the select construct itself.
-        if is_select_branch:
-            if self._select_branch_open and self._select_branch_open[-1]:
-                self.close()
-                did_close = True
-                self._select_branch_open[-1] = False
-        else:
-            # If we are ending a SELECT while inside the last selector body, close
-            # that body before applying the normal `end select` close.
-            if (
-                is_end_select
-                and self._select_branch_open
-                and self._select_branch_open[-1]
-            ):
-                self.close()
-                did_close = True
-                self._select_branch_open[-1] = False
-
-            closes = first in _INDENT_CLOSE or _analysis.is_select_guard(non_comment)
-            if not closes and _analysis.is_labelled_continue(line_tokens):
-                # Legacy labelled-do termination: `10 continue` closes one DO level.
-                closes = True
-            if closes:
-                self.close()
-                did_close = True
-
-        ind = self.indent()
-
-        last = line_tokens[-1].text.lower() if line_tokens else ""
-        if non_comment:
-            last_tok = non_comment[-1]
-            last = last_tok.text.lower()
-            # `end …` constructs (both compact `enddo` and spaced `end do`)
-            # are pure closers.  The trailing keyword (`do`, `associate`, …)
-            # names what is being ended, NOT a new block opener.  Other
-            # closing keywords (`else`, `elseif`, `case`, `contains`)
-            # legitimately re-open via their last token (e.g. `then`).
-            can_open_via_last = not (did_close and first.startswith("end"))
-            # A trailing opener is only needed for `if (...) then` constructs.
-            opens_via_last = (
-                can_open_via_last
-                and last_tok.kind == TokenKind.KEYWORD
-                and last == "then"
-            )
-            opened = opens_via_last or _analysis.is_block_opener(first, non_comment)
-            if opened:
-                self.open()
-                if first == "select":
-                    self._select_branch_open.append(False)
-                elif is_select_branch and self._select_branch_open:
-                    self._select_branch_open[-1] = True
-
-            if is_end_select and self._select_branch_open:
-                self._select_branch_open.pop()
-
-        return ind, did_close
 
 
 _DIRECTIVE_BRANCH_RE = re.compile(
@@ -2471,64 +2275,6 @@ def render_logical_line(
 
 
 # ---------------------------------------------------------------------------
-# Multi-token normalisation
-# ---------------------------------------------------------------------------
-
-# Keywords that can follow `end` to form a compound end-keyword
-_END_CONTINUATIONS: frozenset[str] = frozenset(
-    {
-        "if",
-        "do",
-        "function",
-        "subroutine",
-        "module",
-        "program",
-        "where",
-        "select",
-        "interface",
-        "type",
-        "associate",
-        "block",
-        "critical",
-        "team",
-        "forall",
-        "enum",
-    }
-)
-
-
-def merge_end_keywords(tokens: list[Token], cfg: FormatConfig) -> list[Token]:
-    """Merge adjacent `end` + `<keyword>` pairs into compact form when configured.
-
-    This is needed for compact mode because spaced forms (`end if`) are two
-    separate tokens in the stream.
-    """
-    if cfg.end_keyword_form != "compact":
-        return tokens
-
-    result: list[Token] = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if (
-            tok.kind == TokenKind.KEYWORD
-            and tok.text.lower() == "end"
-            and i + 1 < len(tokens)
-            and tokens[i + 1].kind == TokenKind.KEYWORD
-            and tokens[i + 1].text.lower() in _END_CONTINUATIONS
-        ):
-            merged_text = "end" + tokens[i + 1].text.lower()
-            if cfg.keyword_case == "upper":
-                merged_text = merged_text.upper()
-            result.append(Token(TokenKind.KEYWORD, merged_text, tok.line, tok.col))
-            i += 2
-        else:
-            result.append(tok)
-            i += 1
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Single-line if splitting
 # ---------------------------------------------------------------------------
 
@@ -2594,49 +2340,6 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
     raw_lines = source.splitlines()
     tracker = IndentTracker(cfg.indent_width)
     output_lines: list[str] = []
-
-    # Normalise token-level rules. Keep this inline in the hot path: formatting
-    # large trees visits every token exactly once here.
-    keyword_upper = cfg.keyword_case == "upper"
-
-    def normalise_line(line_tokens: list[Token]) -> list[Token]:
-        normalised: list[Token] = []
-        for tok in line_tokens:
-            kind = tok.kind
-            text = tok.text
-
-            if kind == TokenKind.KEYWORD:
-                if cfg.normalize_keyword_case:
-                    text = text.upper() if keyword_upper else text.lower()
-                if cfg.normalize_end_keywords:
-                    lower = text.lower()
-                    if (
-                        cfg.end_keyword_form == "spaced"
-                        and lower in _analysis.COMPACT_TO_SPACED_END_KEYWORDS
-                    ):
-                        text = _analysis.COMPACT_TO_SPACED_END_KEYWORDS[lower]
-                        if keyword_upper:
-                            text = text.upper()
-                    elif (
-                        cfg.end_keyword_form == "compact"
-                        and lower in _analysis.SPACED_TO_COMPACT_END_KEYWORDS
-                    ):
-                        text = _analysis.SPACED_TO_COMPACT_END_KEYWORDS[lower]
-                        if keyword_upper:
-                            text = text.upper()
-            elif kind == TokenKind.LOGICAL:
-                text = text.lower()
-            elif cfg.normalize_operators:
-                replacement = _OLD_TO_NEW_OP.get(text.lower())
-                if replacement is not None:
-                    kind = _NEW_OP_TO_KIND[replacement]
-                    text = replacement
-
-            if kind is tok.kind and text == tok.text:
-                normalised.append(tok)
-            else:
-                normalised.append(Token(kind, text, tok.line, tok.col))
-        return normalised
 
     # Buffer for comment/blank lines awaiting the indentation of the next code line.
     # None entries represent blank lines; str entries are raw comment texts.
@@ -2795,7 +2498,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         if cfg.normalize_end_keywords:
             logical_line = merge_end_keywords(logical_line, cfg)
-        normalised = normalise_line(logical_line)
+        normalised = normalise_line(logical_line, cfg)
         if cfg.canonicalize_declarations:
             normalised = _analysis.canonicalise_declaration_tokens(normalised)
 
