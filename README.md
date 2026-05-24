@@ -1,5 +1,10 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/eirik-kjonstad/sable/v0.1.3/assets/sable-logo.svg" alt="Sable logo" width="420">
+  <br>
+  <a href="https://github.com/eirik-kjonstad/sable"><img src="assets/sable-badge.svg" alt="Code style: Sable"></a>
+  <a href="https://pypi.org/project/sable-fortran/"><img src="https://img.shields.io/pypi/v/sable-fortran.svg" alt="PyPI version"></a>
+  <a href="https://github.com/eirik-kjonstad/sable/actions/workflows/ci.yml"><img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14%20%7C%203.15--dev-3776ab.svg" alt="Python 3.10 through 3.15-dev"></a>
+  <a href="https://github.com/eirik-kjonstad/sable/blob/main/LICENSE"><img src="https://img.shields.io/pypi/l/sable-fortran.svg" alt="License: MIT"></a>
 </p>
 
 An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/black).
@@ -120,6 +125,28 @@ File-wide:
 
 ## Configuration
 
+Formatter options are CLI flags:
+
+```bash
+sable format --line-length 88 src/
+```
+
+| Option | Default | Values | Applies to |
+| --- | ---: | --- | --- |
+| `--line-length` | `100` | integer | `format`, `check` |
+| `--indent-width` | `3` | integer | `format`, `check` |
+| `--keyword-case` | `lower` | `lower`, `upper` | `format`, `check` |
+| `--end-keyword-form` | `spaced` | `spaced`, `compact` | `format`, `check` |
+| `--no-normalize-operators` | off | flag | `format`, `check` |
+| `rule_set` / `--rule-set` | `all` | `style`, `lint`, `all` | `check` |
+| `select` / `--select` | `[]` | rule codes | `check` |
+| `ignore` / `--ignore` | `[]` | rule codes | `check` |
+| `output_format` / `--output-format` | `text` | `text`, `json`, `sarif`, `gitlab-codequality` | `check` |
+| `baseline` / `--baseline` | unset | path | `check` |
+| `fix` / `--fix` | `false` | boolean | `check` |
+| `unsafe_fixes` / `--unsafe-fixes` | `false` | boolean | `check` |
+| `generate_baseline` / `--generate-baseline` | `false` | boolean | `check` |
+
 Example `pyproject.toml`:
 
 ```toml
@@ -134,7 +161,13 @@ unsafe_fixes = false
 generate_baseline = false
 ```
 
-CLI flags override `pyproject.toml` defaults.
+For `check`, CLI flags override `pyproject.toml` defaults.
+
+## Badge
+
+```markdown
+[![Code style: Sable](https://raw.githubusercontent.com/eirik-kjonstad/sable/main/assets/sable-badge.svg)](https://github.com/eirik-kjonstad/sable)
+```
 
 ## License
 

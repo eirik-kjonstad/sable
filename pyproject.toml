@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sable-fortran"
-version = "0.3.8"
+version = "0.3.9"
 description = "An uncompromising Fortran formatter, inspired by Black"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,9 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
