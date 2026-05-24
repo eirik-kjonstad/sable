@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .config import FormatConfig
 from .diagnostics import Diagnostic, FixSafety, RuleContext, TextEdit
-from .formatter import FormatConfig
 from .lexer import iter_logical_lines, tokenize
 from .rules import get_rules
 

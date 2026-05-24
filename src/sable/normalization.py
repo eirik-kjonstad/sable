@@ -8,7 +8,7 @@ from . import analysis as _analysis
 from .tokens import Token, TokenKind
 
 if TYPE_CHECKING:
-    from .formatter import FormatConfig
+    from .config import FormatConfig
 
 _OLD_TO_NEW_OP: dict[str, str] = {
     ".eq.": "==",

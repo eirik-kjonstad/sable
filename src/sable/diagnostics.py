@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 from .tokens import Token
 
 if TYPE_CHECKING:
-    from .formatter import FormatConfig
+    from .config import FormatConfig
 
 
 class Severity(str, Enum):
