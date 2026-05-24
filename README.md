@@ -1,5 +1,9 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/eirik-kjonstad/sable/v0.1.3/assets/sable-logo.svg" alt="Sable logo" width="420">
+  <br>
+  <a href="https://github.com/eirik-kjonstad/sable">
+    <img src="assets/sable-badge.svg" alt="Code style: Sable">
+  </a>
 </p>
 
 An uncompromising Fortran formatter, inspired by [Black](https://github.com/psf/black).
@@ -15,6 +19,12 @@ to identify code issues.
 
 ```bash
 pip install sable-fortran
+```
+
+## Badge
+
+```markdown
+[![Code style: Sable](https://raw.githubusercontent.com/eirik-kjonstad/sable/main/assets/sable-badge.svg)](https://github.com/eirik-kjonstad/sable)
 ```
 
 ## Quick Start
