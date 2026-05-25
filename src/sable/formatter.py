@@ -1137,7 +1137,7 @@ def _pick_split_index(
 
     Preference:
       1. top-level commas,
-      2. top-level assignment (`=`),
+      2. top-level assignment (`=`), unless the RHS has a viable operator split,
       3. boundary before binary `+`/`-`,
       4. boundary before `*`,
       5. other low-precedence operators.
@@ -1313,6 +1313,16 @@ def _pick_split_index(
                     post = [b for b in group if b > protected_end]
                     filtered.append(post if post else group)
                 priorities = filtered
+
+            if priorities[1]:
+                rhs_operator_splits = [
+                    boundary
+                    for group in priorities[2:]
+                    for boundary in group
+                    if any(assignment < boundary for assignment in priorities[1])
+                ]
+                if rhs_operator_splits:
+                    priorities[1] = []
 
             best = next((p for p in priorities if p), None)
             if best:
@@ -1563,6 +1573,11 @@ def _try_expand_arg_list(
     procedure_header_with_tail = _is_procedure_header_arg_list(
         code_body, open_idx, close_tail_tokens
     )
+    procedure_header_with_bind_tail = (
+        procedure_header_with_tail
+        and close_tail_tokens
+        and close_tail_tokens[0].text.lower() == "bind"
+    )
     can_hang_open = len(arg_groups) >= 2
     first_arg_column_indent = " " * (len(indent) + len(prefix_with_open))
     default_continuation_indent = close_indent + " " * cfg.indent_width
@@ -1669,12 +1684,18 @@ def _try_expand_arg_list(
         )
         inline_candidate = content_lines[-1] + close_piece
         inline_comment = content_comments[-1] + close_comment_suffix
-        if len(inline_candidate) + len(inline_comment) <= cfg.line_length:
+        inline_paren_candidate = content_lines[-1] + close_paren_piece
+        if procedure_header_with_bind_tail and (
+            len(inline_paren_candidate) + len(content_comments[-1]) + 2
+            <= cfg.line_length
+        ):
+            content_lines[-1] = inline_paren_candidate
+            tail_after_inline_close = True
+        elif len(inline_candidate) + len(inline_comment) <= cfg.line_length:
             inline_close = True
             content_lines[-1] = inline_candidate
             content_comments[-1] = inline_comment
         elif procedure_header_with_tail:
-            inline_paren_candidate = content_lines[-1] + close_paren_piece
             if (
                 len(inline_paren_candidate) + len(content_comments[-1]) + 2
                 <= cfg.line_length

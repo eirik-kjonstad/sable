@@ -1615,6 +1615,43 @@ class TestArgListExpansion:
         )
         assert not any(line.lstrip().startswith(") bind") for line in lines)
 
+    def test_multiline_function_header_moves_continuation_after_close_paren(self):
+        src = (
+            "function et_scc_cc_backend_get_orbitals_shape(backend_handle, &\n"
+            "                                                 rows, &\n"
+            "                                                 cols &\n"
+            '            ) bind(C, name = "et_scc_cc_backend_get_orbitals_shape") '
+            "result(status)\n"
+        )
+        result = assert_idempotent(src, line_length=110)
+        lines = result.splitlines()
+
+        assert any(line.lstrip() == "cols) &" for line in lines)
+        assert any(
+            line.lstrip()
+            == 'bind(C, name = "et_scc_cc_backend_get_orbitals_shape") result(status)'
+            for line in lines
+        )
+        assert not any(line.lstrip() == "cols &" for line in lines)
+        assert not any(line.lstrip().startswith(") bind") for line in lines)
+
+    def test_multiline_function_header_splits_short_bind_tail_after_close_paren(self):
+        src = (
+            "function foo(backend_handle, &\n"
+            "                                             values, &\n"
+            "                                             rows, &\n"
+            "                                             cols &\n"
+            '            ) bind(C, name = "foo") result(status)\n'
+        )
+        result = assert_idempotent(src, line_length=110)
+        lines = result.splitlines()
+
+        assert any(line.lstrip() == "cols) &" for line in lines)
+        assert any(
+            line.lstrip() == 'bind(C, name = "foo") result(status)' for line in lines
+        )
+        assert not any("cols) bind" in line for line in lines)
+
     def test_subroutine_header_keeps_close_paren_with_final_argument_before_bind(self):
         src = (
             "subroutine et_scc_cc_backend_get_gradient_matrix(backend_handle, "
@@ -1706,8 +1743,8 @@ class TestArgListExpansion:
         lines = result.splitlines()
         assert not any("s_aibj( &" in line for line in lines)
         assert any("s_aibj(a, i, b, j) =" in line for line in lines)
-        # RHS should still split at assignment/operator boundaries when long.
-        assert lines[0].rstrip().endswith("= &")
+        # RHS should still split at operator boundaries when long.
+        assert lines[0].rstrip().endswith("/ &")
         assert any(
             line.lstrip().startswith("+ ") or line.lstrip().startswith("- ")
             for line in lines[1:]
@@ -2195,12 +2232,31 @@ class TestLineBreakPriority:
             line.rstrip().endswith("= &") for line in lines
         )  # ensure comma wins here
 
-    def test_split_prefers_assignment_before_low_precedence_operator(self):
+    def test_arithmetic_assignment_keeps_first_rhs_term_when_operator_split_fits(
+        self,
+    ):
         src = "very_long_target_name = alpha_value + beta_value + gamma_value\n"
         result = fmt(src, line_length=46)
         lines = result.splitlines()
         assert len(lines) > 1
-        assert lines[0].rstrip().endswith("= &")
+        assert lines[0].rstrip().endswith("alpha_value &")
+
+    def test_multiplicative_assignment_keeps_rhs_on_first_line(self):
+        src = (
+            "testmetric(i, j) = "
+            "(1.0E0_realk / sqrt(arh%fifometric(i, i))) "
+            "* arh%fifometric(i, j) "
+            "* (1.0E0_realk / sqrt(arh%fifometric(j, j)))\n"
+        )
+        result = fmt(src, line_length=110)
+        lines = result.splitlines()
+        assert len(lines) > 1
+        assert not lines[0].rstrip().endswith("= &")
+        assert lines[0] == (
+            "testmetric(i, j) = "
+            "(1.0E0_realk / sqrt(arh%fifometric(i, i))) "
+            "* arh%fifometric(i, j) &"
+        )
 
     def test_arithmetic_assignment_chain_aligns_with_rhs_start(self):
         src = (
