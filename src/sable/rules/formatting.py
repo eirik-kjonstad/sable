@@ -5,6 +5,8 @@ from __future__ import annotations
 import bisect
 import re
 
+from .. import analysis as _analysis
+from .. import token_render as _token_render
 from ..diagnostics import (
     Diagnostic,
     Fix,
@@ -12,12 +14,6 @@ from ..diagnostics import (
     RuleContext,
     Severity,
     TextEdit,
-)
-from ..formatter import (
-    _COMPACT_TO_SPACED,
-    _canonicalise_declaration_tokens,
-    _parse_declaration,
-    _render_tokens,
 )
 from ..tokens import Token, TokenKind
 
@@ -41,7 +37,7 @@ _REL_OP_KINDS = {
 
 _SPACED_END_TO_COMPACT: dict[tuple[str, ...], str] = {
     tuple(spaced.split()): compact
-    for compact, spaced in _COMPACT_TO_SPACED.items()
+    for compact, spaced in _analysis.COMPACT_TO_SPACED_END_KEYWORDS.items()
     if spaced.startswith("end ")
 }
 
@@ -154,7 +150,7 @@ class SBL002EndKeywordFormRule:
                 if tok.kind != TokenKind.KEYWORD:
                     continue
                 compact = tok.text.lower()
-                spaced = _COMPACT_TO_SPACED.get(compact)
+                spaced = _analysis.COMPACT_TO_SPACED_END_KEYWORDS.get(compact)
                 if spaced is None:
                     continue
                 replacement = _keyword_case(spaced, ctx.cfg.keyword_case)
@@ -251,12 +247,12 @@ class SBL003DeclarationDoubleColonRule:
                 continue
             if any(tok.kind == TokenKind.DOUBLE_COLON for tok in non_comment):
                 continue
-            decl = _parse_declaration(non_comment)
+            decl = _analysis.parse_declaration(non_comment)
             if decl is None:
                 continue
 
-            canonical = _canonicalise_declaration_tokens(non_comment)
-            replacement = _render_tokens(canonical)
+            canonical = _analysis.canonicalise_declaration_tokens(non_comment)
+            replacement = _token_render.render_tokens(canonical)
             first, last = non_comment[0], non_comment[-1]
             start = _token_start(ctx, first)
             end = _token_end(ctx, last)
@@ -878,7 +874,7 @@ class SBL103MissingIntentOnDummyArgsRule:
 
             if stack:
                 if not any(tok.kind == TokenKind.CONTINUATION for tok in non_comment):
-                    decl = _parse_declaration(non_comment)
+                    decl = _analysis.parse_declaration(non_comment)
                     if decl is not None:
                         frame = stack[-1]
                         args = frame["args"]

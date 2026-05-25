@@ -15,746 +15,31 @@ so they can be individually toggled and tested.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 
+from . import analysis as _analysis
+from . import token_render as _token_render
+from .config import DEFAULT_CONFIG, FormatConfig
+from .indentation import IndentTracker
+from .normalization import (
+    merge_end_keywords,
+    normalise_end_keyword,
+    normalise_keyword_case,
+    normalise_line,
+    normalise_logical_literal,
+    normalise_operator,
+)
 from .tokens import Token, TokenKind
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class FormatConfig:
-    """All knobs exposed to the user (Black-style: mostly zero knobs)."""
-
-    line_length: int = 100
-    """Maximum line length before continuation is inserted."""
-
-    indent_width: int = 3
-    """Spaces per indentation level."""
-
-    keyword_case: str = "lower"
-    """How to case Fortran keywords: 'lower' | 'upper'."""
-
-    end_keyword_form: str = "spaced"
-    """How to emit compound END keywords.
-
-    'spaced'  →  end if / end do / end subroutine / …
-    'compact' →  endif / enddo / endsubroutine / …
-    """
-
-    normalize_operators: bool = True
-    """Replace old-style relational operators (.EQ., .GT., …) with modern (==, >, …)."""
-
-    trailing_newline: bool = True
-    """Ensure the file ends with exactly one newline."""
-
-    double_colon_declarations: bool = True
-    """Always emit '::' in type declarations."""
-
-    normalize_keyword_case: bool = True
-    """Normalize keyword casing according to ``keyword_case`` when enabled."""
-
-    normalize_end_keywords: bool = True
-    """Normalize compact/spaced END keywords according to ``end_keyword_form``."""
-
-    canonicalize_declarations: bool = True
-    """Canonicalize declaration structure and attribute ordering."""
-
-
-DEFAULT_CONFIG = FormatConfig()
-
-
-# ---------------------------------------------------------------------------
-# Operator normalisation map
-# ---------------------------------------------------------------------------
-
-_OLD_TO_NEW_OP: dict[str, str] = {
-    ".eq.": "==",
-    ".ne.": "/=",
-    ".lt.": "<",
-    ".le.": "<=",
-    ".gt.": ">",
-    ".ge.": ">=",
-}
-_NEW_OP_TO_KIND: dict[str, TokenKind] = {
-    "==": TokenKind.OP_EQ,
-    "/=": TokenKind.OP_NEQ,
-    "<": TokenKind.OP_LT,
-    "<=": TokenKind.OP_LE,
-    ">": TokenKind.OP_GT,
-    ">=": TokenKind.OP_GE,
-}
-
-# Operators that require spaces on both sides
-_BINARY_OP_KINDS: frozenset[TokenKind] = frozenset(
-    {
-        TokenKind.OP_PLUS,
-        TokenKind.OP_MINUS,
-        TokenKind.OP_STAR,
-        TokenKind.OP_SLASH,
-        TokenKind.OP_POWER,
-        TokenKind.OP_CONCAT,
-        TokenKind.OP_EQ,
-        TokenKind.OP_NEQ,
-        TokenKind.OP_LT,
-        TokenKind.OP_LE,
-        TokenKind.OP_GT,
-        TokenKind.OP_GE,
-        TokenKind.OP_AND,
-        TokenKind.OP_OR,
-        TokenKind.OP_NOT,
-        TokenKind.OP_EQV,
-        TokenKind.OP_NEQV,
-        TokenKind.OP_ASSIGN,
-        TokenKind.OP_ARROW,
-        TokenKind.OP_PERCENT,
-    }
-)
-
-# These operators do NOT get spaces (tightly bound)
-_NO_SPACE_KINDS: frozenset[TokenKind] = frozenset(
-    {
-        TokenKind.OP_PERCENT,  # a%b
-        TokenKind.OP_POWER,  # a**b  (debatable, sable chooses no-space)
-    }
-)
-
-# Control-flow keywords that must be followed by a space before '('
-# (excludes type keywords like integer, real, type, class where 'integer(8)' is correct)
-_KEYWORD_SPACE_BEFORE_PAREN: frozenset[str] = frozenset(
-    {
-        "if",
-        "elseif",
-        "else if",
-        "while",
-        "select",
-        "case",
-        "where",
-        "forall",
-        "submodule",
-        "associate",
-        "concurrent",
-        "is",
-        "rank",
-        "team",
-    }
-)
-
-# Compound end-keyword forms
-_COMPACT_TO_SPACED: dict[str, str] = {
-    "endif": "end if",
-    "enddo": "end do",
-    "endforall": "end forall",
-    "endfunction": "end function",
-    "endmodule": "end module",
-    "endprogram": "end program",
-    "endsubroutine": "end subroutine",
-    "endwhere": "end where",
-    "endselect": "end select",
-    "endinterface": "end interface",
-    "endassociate": "end associate",
-    "endblock": "end block",
-    "endcritical": "end critical",
-    "endteam": "end team",
-    "endtype": "end type",
-    "endenum": "end enum",
-    "endblockdata": "end block data",
-}
-_SPACED_TO_COMPACT: dict[str, str] = {v: k for k, v in _COMPACT_TO_SPACED.items()}
-
-
-# ---------------------------------------------------------------------------
-# Token-level normalisation
-# ---------------------------------------------------------------------------
-
-
-def normalise_keyword_case(token: Token, cfg: FormatConfig) -> Token:
-    """Apply configured keyword casing."""
-    if not cfg.normalize_keyword_case:
-        return token
-    if token.kind != TokenKind.KEYWORD:
-        return token
-    text = token.text.lower() if cfg.keyword_case == "lower" else token.text.upper()
-    return Token(token.kind, text, token.line, token.col)
-
-
-def normalise_end_keyword(token: Token, cfg: FormatConfig) -> Token:
-    """Normalise compact/spaced END keyword forms."""
-    if not cfg.normalize_end_keywords:
-        return token
-    if token.kind != TokenKind.KEYWORD:
-        return token
-    text = token.text.lower()
-    if cfg.end_keyword_form == "spaced" and text in _COMPACT_TO_SPACED:
-        new_text = _COMPACT_TO_SPACED[text]
-        if cfg.keyword_case == "upper":
-            new_text = new_text.upper()
-        return Token(token.kind, new_text, token.line, token.col)
-    if cfg.end_keyword_form == "compact" and text in _SPACED_TO_COMPACT:
-        new_text = _SPACED_TO_COMPACT[text]
-        if cfg.keyword_case == "upper":
-            new_text = new_text.upper()
-        return Token(token.kind, new_text, token.line, token.col)
-    return token
-
-
-def normalise_operator(token: Token, cfg: FormatConfig) -> Token:
-    """Replace old-style relational operators with modern equivalents."""
-    if not cfg.normalize_operators:
-        return token
-    replacement = _OLD_TO_NEW_OP.get(token.text.lower())
-    if replacement is None:
-        return token
-    return Token(_NEW_OP_TO_KIND[replacement], replacement, token.line, token.col)
-
-
-def normalise_logical_literal(token: Token) -> Token:
-    """Canonicalize logical literals to lowercase (.true./.false.)."""
-    if token.kind != TokenKind.LOGICAL:
-        return token
-    return Token(token.kind, token.text.lower(), token.line, token.col)
-
-
-# ---------------------------------------------------------------------------
-# Spacing rules
-# ---------------------------------------------------------------------------
-
-
-def _needs_space_before(
-    prev: Token | None,
-    curr: Token,
-    paren_depth: int = 0,
-    prev_prev: Token | None = None,
-    compact_named_assign: bool = False,
-) -> bool:
-    """Return True if a space is required before *curr*.
-
-    *paren_depth* is the number of currently open parentheses/brackets.  It is
-    used to distinguish a slice colon (inside parens, no space either side) from
-    a top-level colon such as ``only:`` in a USE statement or a construct label
-    (space after, no space before).
-    """
-    if prev is None:
-        return False
-    pk, ck = prev.kind, curr.kind
-
-    # Space between control-flow keyword and opening paren: if (cond), case (val), …
-    if (
-        ck == TokenKind.LPAREN
-        and pk == TokenKind.KEYWORD
-        and prev.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN
-    ):
-        return True
-    if (
-        ck == TokenKind.LPAREN
-        and pk == TokenKind.KEYWORD
-        and prev.text.lower() == "type"
-        and prev_prev is not None
-        and prev_prev.kind == TokenKind.KEYWORD
-        and prev_prev.text.lower() == "select"
-    ):
-        return True
-
-    # Space between closing paren and a following identifier or keyword:
-    # ) then, ) result, if (cond) action, …
-    if pk == TokenKind.RPAREN and ck in (TokenKind.KEYWORD, TokenKind.NAME):
-        return True
-
-    # Never space inside parens / brackets at boundary
-    if pk in (TokenKind.LPAREN, TokenKind.LBRACKET):
-        return False
-    if ck in (TokenKind.RPAREN, TokenKind.RBRACKET, TokenKind.COMMA):
-        return False
-
-    # No space around % and **
-    if pk == TokenKind.OP_PERCENT or ck == TokenKind.OP_PERCENT:
-        return False
-    if pk == TokenKind.OP_POWER or ck == TokenKind.OP_POWER:
-        return False
-    if _is_legacy_type_selector_boundary(prev_prev, prev, curr):
-        return False
-
-    # Space after comma
-    if pk == TokenKind.COMMA:
-        return True
-
-    # Compact keyword/named assignment in call/declaration argument lists.
-    if compact_named_assign and (
-        ck == TokenKind.OP_ASSIGN or pk == TokenKind.OP_ASSIGN
-    ):
-        return False
-
-    # Space around binary operators (but not unary minus/plus)
-    if ck in _BINARY_OP_KINDS and ck not in _NO_SPACE_KINDS:
-        return True
-    if pk in _BINARY_OP_KINDS and pk not in _NO_SPACE_KINDS:
-        return True
-
-    # Space before/after ::
-    if pk == TokenKind.DOUBLE_COLON or ck == TokenKind.DOUBLE_COLON:
-        return True
-
-    # No space before ':' in any context.
-    if ck == TokenKind.COLON:
-        return False
-    # Space after ':' only at the top level (USE only:, construct labels, …).
-    # Inside parens/brackets ':' is a slice/subscript operator — no space.
-    # Also treat top-level index-range forms like ``1:n`` (which can appear when
-    # an argument is rendered on its own physical line) as slice syntax.
-    if pk == TokenKind.COLON:
-        if (
-            paren_depth == 0
-            and prev_prev is not None
-            and prev_prev.kind
-            in {
-                TokenKind.NAME,
-                TokenKind.INTEGER,
-                TokenKind.REAL,
-                TokenKind.RPAREN,
-                TokenKind.RBRACKET,
-            }
-            and ck
-            in {
-                TokenKind.NAME,
-                TokenKind.INTEGER,
-                TokenKind.REAL,
-                TokenKind.LPAREN,
-                TokenKind.OP_PLUS,
-                TokenKind.OP_MINUS,
-            }
-            and not (
-                prev_prev.kind == TokenKind.NAME and prev_prev.text.lower() == "only"
-            )
-        ):
-            return False
-        return paren_depth == 0
-
-    # Default: space between distinct tokens
-    if pk not in (TokenKind.LPAREN, TokenKind.LBRACKET) and ck not in (
-        TokenKind.RPAREN,
-        TokenKind.RBRACKET,
-        TokenKind.COMMA,
-        TokenKind.COLON,
-        TokenKind.DOUBLE_COLON,
-    ):
-        # Names/keywords/literals separated by space
-        if pk in (
-            TokenKind.NAME,
-            TokenKind.KEYWORD,
-            TokenKind.INTEGER,
-            TokenKind.REAL,
-            TokenKind.STRING,
-            TokenKind.LOGICAL,
-        ) and ck in (
-            TokenKind.NAME,
-            TokenKind.KEYWORD,
-            TokenKind.INTEGER,
-            TokenKind.REAL,
-            TokenKind.STRING,
-            TokenKind.LOGICAL,
-        ):
-            return True
-
-    return False
-
-
-def _is_compact_equals_paren_open(tokens: list[Token], open_idx: int) -> bool:
-    """Return True when '=' should be compact inside this parenthesized group."""
-    if open_idx <= 0 or tokens[open_idx].kind != TokenKind.LPAREN:
-        return False
-
-    prev = tokens[open_idx - 1]
-    prev_prev = tokens[open_idx - 2] if open_idx >= 2 else None
-
-    if prev.kind == TokenKind.NAME:
-        # Calls and procedure declarations: foo(a=1, b=2)
-        return True
-
-    if prev.kind != TokenKind.KEYWORD:
-        return False
-
-    word = prev.text.lower()
-    if word in _KEYWORD_SPACE_BEFORE_PAREN:
-        return False
-    if word in _NON_CALL_PAREN_KEYWORDS:
-        return True
-    if word in _DECL_TYPE_KEYWORDS:
-        # `select type (...)` is a control construct, not a declaration arg list.
-        if (
-            word == "type"
-            and prev_prev is not None
-            and prev_prev.kind == TokenKind.KEYWORD
-            and prev_prev.text.lower() == "select"
-        ):
-            return False
-        return True
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Indentation tracking
-# ---------------------------------------------------------------------------
-
-# Keywords that increase indentation on the *next* line
-_INDENT_OPEN: frozenset[str] = frozenset(
-    {
-        "then",
-        "do",
-        "else",
-        "contains",
-        "module",
-        "submodule",
-        "program",
-        "function",
-        "subroutine",
-        "interface",
-        "type",
-        "associate",
-        "block",
-        "critical",
-        "change",
-        "where",
-        "forall",
-        "select",
-        "case",
-        "class",
-        "rank",
-        "enum",
-    }
-)
-
-# Prefix attributes that may precede `function` or `subroutine` in a
-# procedure header, e.g. `pure function f(...)` or `recursive subroutine s()`
-_PROCEDURE_PREFIXES: frozenset[str] = frozenset(
-    {
-        "pure",
-        "recursive",
-        "elemental",
-        "impure",
-        "non_recursive",
-    }
-)
-
-# Type-spec keywords that may prefix a function header, e.g.
-# `integer function f(...)` or `type(my_t) function f(...)`.
-_FUNCTION_TYPE_PREFIXES: frozenset[str] = frozenset(
-    {
-        "integer",
-        "real",
-        "complex",
-        "logical",
-        "character",
-        "type",
-        "class",
-        "double",
-        "precision",
-    }
-)
-
-# Keywords that close an indentation level (decrease before rendering)
-_INDENT_CLOSE: frozenset[str] = frozenset(
-    {
-        "end",
-        "endif",
-        "enddo",
-        "endfunction",
-        "endsubroutine",
-        "endmodule",
-        "endprogram",
-        "endwhere",
-        "endselect",
-        "endinterface",
-        "endtype",
-        "endassociate",
-        "endblock",
-        "endcritical",
-        "endteam",
-        "endenum",
-        "end if",
-        "end do",
-        "end function",
-        "end subroutine",
-        "end module",
-        "end program",
-        "end where",
-        "end select",
-        "end interface",
-        "end type",
-        "end associate",
-        "end block",
-        "end critical",
-        "end team",
-        "end enum",
-        "else",
-        "elseif",
-        "case",
-        "contains",
-    }
-)
-
-
-class IndentTracker:
-    """Track indentation level as we walk logical lines."""
-
-    def __init__(self, indent_width: int) -> None:
-        self.level = 0
-        self.width = indent_width
-        # Per active SELECT construct, track whether a selector branch body is open.
-        self._select_branch_open: list[bool] = []
-
-    def indent(self) -> str:
-        return " " * (self.level * self.width)
-
-    def open(self) -> None:
-        self.level += 1
-
-    def close(self) -> None:
-        self.level = max(0, self.level - 1)
-
-    def process_line(self, line_tokens: list[Token]) -> tuple[str, bool]:
-        """Return (indentation_string, did_close) for a logical line."""
-        if not line_tokens:
-            return self.indent(), False
-
-        non_comment = self._core_tokens(line_tokens)
-        first = self._first_keyword(line_tokens)
-        is_select_branch = self._is_select_branch(non_comment)
-        is_end_select = self._is_end_select(non_comment)
-        did_close = False
-
-        # Selector guards (`case`, `type is`, `class ...`, `rank ...`) close only
-        # the previous selector body, not the select construct itself.
-        if is_select_branch:
-            if self._select_branch_open and self._select_branch_open[-1]:
-                self.close()
-                did_close = True
-                self._select_branch_open[-1] = False
-        else:
-            # If we are ending a SELECT while inside the last selector body, close
-            # that body before applying the normal `end select` close.
-            if (
-                is_end_select
-                and self._select_branch_open
-                and self._select_branch_open[-1]
-            ):
-                self.close()
-                did_close = True
-                self._select_branch_open[-1] = False
-
-            closes = first in _INDENT_CLOSE or self._is_select_guard(non_comment)
-            if not closes and self._is_labelled_continue(line_tokens):
-                # Legacy labelled-do termination: `10 continue` closes one DO level.
-                closes = True
-            if closes:
-                self.close()
-                did_close = True
-
-        ind = self.indent()
-
-        last = line_tokens[-1].text.lower() if line_tokens else ""
-        if non_comment:
-            last_tok = non_comment[-1]
-            last = last_tok.text.lower()
-            # `end …` constructs (both compact `enddo` and spaced `end do`)
-            # are pure closers.  The trailing keyword (`do`, `associate`, …)
-            # names what is being ended, NOT a new block opener.  Other
-            # closing keywords (`else`, `elseif`, `case`, `contains`)
-            # legitimately re-open via their last token (e.g. `then`).
-            can_open_via_last = not (did_close and first.startswith("end"))
-            # A trailing opener is only needed for `if (...) then` constructs.
-            opens_via_last = (
-                can_open_via_last
-                and last_tok.kind == TokenKind.KEYWORD
-                and last == "then"
-            )
-            opened = opens_via_last or self._is_block_opener(first, non_comment)
-            if opened:
-                self.open()
-                if first == "select":
-                    self._select_branch_open.append(False)
-                elif is_select_branch and self._select_branch_open:
-                    self._select_branch_open[-1] = True
-
-            if is_end_select and self._select_branch_open:
-                self._select_branch_open.pop()
-
-        return ind, did_close
-
-    @staticmethod
-    def _core_tokens(line_tokens: list[Token]) -> list[Token]:
-        """Return statement tokens with labels and construct names removed."""
-        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
-        if not non_comment:
-            return []
-        i = 0
-        if non_comment[i].kind in (TokenKind.INTEGER, TokenKind.LABEL):
-            i += 1
-        if (
-            i + 1 < len(non_comment)
-            and non_comment[i].kind == TokenKind.NAME
-            and non_comment[i + 1].kind == TokenKind.COLON
-        ):
-            i += 2
-        return non_comment[i:]
-
-    @staticmethod
-    def _first_keyword(line_tokens: list[Token]) -> str:
-        """Return the first keyword text, skipping optional leading labels.
-
-        Supported prefixes before the first executable keyword:
-        - numeric statement labels (``10 do i = ...``)
-        - construct names (``FindPos: do i = ...``)
-        - a numeric label followed by a construct name
-          (``10 FindPos: do i = ...``)
-        """
-        core = IndentTracker._core_tokens(line_tokens)
-        if core and core[0].kind == TokenKind.KEYWORD:
-            return core[0].text.lower()
-        return ""
-
-    @staticmethod
-    def _is_select_guard(non_comment: list[Token]) -> bool:
-        """Return True for select-type/rank branch selector lines."""
-        if not non_comment:
-            return False
-        first = non_comment[0].text.lower()
-        second = non_comment[1].text.lower() if len(non_comment) > 1 else ""
-        second_kind = non_comment[1].kind if len(non_comment) > 1 else None
-        if first == "type" and second == "is":
-            return True
-        if first == "class" and second in ("is", "default"):
-            return True
-        if first == "rank" and (second_kind == TokenKind.LPAREN or second == "default"):
-            return True
-        return False
-
-    @staticmethod
-    def _is_select_branch(non_comment: list[Token]) -> bool:
-        """Return True for selector branch lines within SELECT constructs."""
-        if not non_comment:
-            return False
-        if (
-            non_comment[0].kind == TokenKind.KEYWORD
-            and non_comment[0].text.lower() == "case"
-        ):
-            return True
-        return IndentTracker._is_select_guard(non_comment)
-
-    @staticmethod
-    def _is_end_select(non_comment: list[Token]) -> bool:
-        """Return True for both `endselect` and `end select`."""
-        if not non_comment:
-            return False
-        if (
-            non_comment[0].kind == TokenKind.KEYWORD
-            and non_comment[0].text.lower() == "endselect"
-        ):
-            return True
-        return (
-            len(non_comment) > 1
-            and non_comment[0].kind == TokenKind.KEYWORD
-            and non_comment[0].text.lower() == "end"
-            and non_comment[1].kind == TokenKind.KEYWORD
-            and non_comment[1].text.lower() == "select"
-        )
-
-    @staticmethod
-    def _is_labelled_continue(line_tokens: list[Token]) -> bool:
-        """Return True for lines like `15 continue` (legacy labelled-DO terminator)."""
-        non_comment = [t for t in line_tokens if t.kind != TokenKind.COMMENT]
-        return (
-            len(non_comment) >= 2
-            and non_comment[0].kind in (TokenKind.INTEGER, TokenKind.LABEL)
-            and non_comment[1].kind == TokenKind.KEYWORD
-            and non_comment[1].text.lower() == "continue"
-        )
-
-    @staticmethod
-    def _is_block_opener(first: str, non_comment: list[Token]) -> bool:
-        """Return True if the first keyword opens a new indentation block.
-
-        Handles ambiguous keywords like ``type``, which can introduce either a
-        type definition (``type :: name`` – block opener) or a variable
-        declaration (``type(kind) :: var`` – not a block opener).
-
-        Also handles procedure prefix attributes (``pure``, ``recursive``,
-        ``elemental``, ``impure``) that may appear before ``function`` or
-        ``subroutine``, e.g. ``pure function f(x) result(y)``.
-        """
-        if first in _PROCEDURE_PREFIXES:
-            # pure/recursive/elemental/… function|subroutine …
-            return any(
-                t.kind == TokenKind.KEYWORD
-                and t.text.lower() in ("function", "subroutine")
-                for t in non_comment
-            )
-        if first in _FUNCTION_TYPE_PREFIXES:
-            # Typed function headers: integer function f(...), type(t) function f(...)
-            function_idx: int | None = None
-            for i, tok in enumerate(non_comment):
-                if tok.kind == TokenKind.KEYWORD and tok.text.lower() == "function":
-                    function_idx = i
-                    break
-            if function_idx is not None:
-                before = non_comment[:function_idx]
-                has_decl_marker = any(t.kind == TokenKind.DOUBLE_COLON for t in before)
-                has_assignment = any(t.kind == TokenKind.OP_ASSIGN for t in before)
-                if not has_decl_marker and not has_assignment:
-                    return True
-        if first == "abstract":
-            # `abstract interface` opens an interface block.
-            return (
-                len(non_comment) > 1
-                and non_comment[1].kind == TokenKind.KEYWORD
-                and non_comment[1].text.lower() == "interface"
-            )
-        if first not in _INDENT_OPEN:
-            return False
-        if first == "change":
-            # `change team (...)` opens a team block.
-            return (
-                len(non_comment) > 1
-                and non_comment[1].kind == TokenKind.KEYWORD
-                and non_comment[1].text.lower() == "team"
-            )
-        if first == "module":
-            # `module procedure ...` within an interface block is a declaration,
-            # not a block opener.
-            for i, tok in enumerate(non_comment):
-                if tok.kind == TokenKind.KEYWORD and tok.text.lower() == "module":
-                    if i + 1 < len(non_comment):
-                        if non_comment[i + 1].text.lower() == "procedure":
-                            return False
-                    break
-        if first == "type":
-            # `type = ...` can be a regular assignment when TYPE is a variable name.
-            if any(t.kind == TokenKind.OP_ASSIGN for t in non_comment):
-                return False
-            # type is (...) inside select type is a selector branch opener.
-            if len(non_comment) > 1 and non_comment[1].text.lower() == "is":
-                return True
-            # type(kind_param) :: var  →  variable declaration, not a block opener
-            if len(non_comment) > 1 and non_comment[1].kind == TokenKind.LPAREN:
-                return False
-        if first == "class":
-            # class(*) :: var / class(t) :: var are declarations, not blocks.
-            if len(non_comment) > 1 and non_comment[1].kind == TokenKind.LPAREN:
-                return False
-            # class is/default inside select type are selector branch openers.
-            return len(non_comment) > 1 and non_comment[1].text.lower() in (
-                "is",
-                "default",
-            )
-        if first == "rank":
-            # rank (...) / rank default inside select rank are branch openers.
-            return len(non_comment) > 1 and (
-                non_comment[1].kind == TokenKind.LPAREN
-                or non_comment[1].text.lower() == "default"
-            )
-        return True
-
+__all__ = [
+    "DEFAULT_CONFIG",
+    "FormatConfig",
+    "format_source",
+    "merge_end_keywords",
+    "normalise_end_keyword",
+    "normalise_keyword_case",
+    "normalise_logical_literal",
+    "normalise_operator",
+]
 
 _DIRECTIVE_BRANCH_RE = re.compile(
     r"^#\s*(if|ifdef|ifndef|elif|else|endif)\b", flags=re.IGNORECASE
@@ -812,331 +97,6 @@ _NONLOGICAL_TRAILING_SPLIT_OPS: frozenset[TokenKind] = frozenset(
 """Non-logical split operators preferred at line end when they fit."""
 
 
-_DECL_TYPE_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "integer",
-        "real",
-        "complex",
-        "logical",
-        "character",
-        "type",
-        "class",
-        "double",
-    }
-)
-
-_LEGACY_STAR_TYPE_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "integer",
-        "real",
-        "complex",
-        "logical",
-        "character",
-    }
-)
-
-_DECL_ATTRIBUTE_ORDER: dict[str, int] = {
-    "dimension": 0,
-    "codimension": 1,
-    "allocatable": 2,
-    "pointer": 3,
-    "intent": 4,
-    "target": 5,
-    "contiguous": 6,
-    "optional": 7,
-    "parameter": 8,
-    "value": 9,
-    "save": 10,
-    "public": 11,
-    "private": 12,
-    "protected": 13,
-    "volatile": 14,
-    "asynchronous": 15,
-    "external": 16,
-    "intrinsic": 17,
-    "bind": 18,
-    "pass": 19,
-    "nopass": 20,
-    "deferred": 21,
-    "non_overridable": 22,
-}
-_DECL_ATTRIBUTE_DEFAULT_ORDER = len(_DECL_ATTRIBUTE_ORDER)
-
-
-@dataclass
-class _DeclarationParts:
-    prefix_tokens: list[Token]
-    entities: list[list[Token]]
-    has_attributes: bool
-    anchor: Token
-
-
-def _make_token(kind: TokenKind, text: str, anchor: Token) -> Token:
-    return Token(kind, text, anchor.line, anchor.col)
-
-
-def _split_top_level_commas(tokens: list[Token]) -> list[list[Token]]:
-    parts: list[list[Token]] = []
-    current: list[Token] = []
-    depth = 0
-    for tok in tokens:
-        if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
-            depth += 1
-            current.append(tok)
-        elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
-            depth = max(0, depth - 1)
-            current.append(tok)
-        elif tok.kind == TokenKind.COMMA and depth == 0:
-            if current:
-                parts.append(current)
-            current = []
-        else:
-            current.append(tok)
-    if current:
-        parts.append(current)
-    return parts
-
-
-def _consume_paren_group(tokens: list[Token], start: int) -> int:
-    if start >= len(tokens) or tokens[start].kind != TokenKind.LPAREN:
-        return start
-    depth = 0
-    i = start
-    while i < len(tokens):
-        if tokens[i].kind == TokenKind.LPAREN:
-            depth += 1
-        elif tokens[i].kind == TokenKind.RPAREN:
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return start
-
-
-def _is_legacy_type_keyword(token: Token | None) -> bool:
-    return (
-        token is not None
-        and token.kind == TokenKind.KEYWORD
-        and token.text.lower() in _LEGACY_STAR_TYPE_KEYWORDS
-    )
-
-
-def _is_double_precision_keyword_pair(
-    first: Token | None, second: Token | None
-) -> bool:
-    return (
-        first is not None
-        and second is not None
-        and first.kind == TokenKind.KEYWORD
-        and second.kind == TokenKind.KEYWORD
-        and first.text.lower() == "double"
-        and second.text.lower() == "precision"
-    )
-
-
-def _consume_legacy_type_selector(tokens: list[Token], start: int) -> int | None:
-    """Consume legacy ``*kind``/``*len`` selectors like ``real*8``."""
-    if start >= len(tokens) or tokens[start].kind != TokenKind.OP_STAR:
-        return None
-    if start + 1 >= len(tokens):
-        return None
-
-    next_tok = tokens[start + 1]
-    if next_tok.kind == TokenKind.INTEGER:
-        return start + 2
-    if next_tok.kind == TokenKind.LPAREN:
-        next_i = _consume_paren_group(tokens, start + 1)
-        return next_i if next_i != start + 1 else None
-    return None
-
-
-def _is_legacy_type_selector_boundary(
-    prev_prev: Token | None, prev: Token | None, curr: Token
-) -> bool:
-    if prev is None:
-        return False
-    if curr.kind == TokenKind.OP_STAR:
-        return _is_legacy_type_keyword(prev) or _is_double_precision_keyword_pair(
-            prev_prev, prev
-        )
-    if prev.kind == TokenKind.OP_STAR:
-        return _is_legacy_type_keyword(prev_prev) or (
-            prev_prev is not None
-            and prev_prev.kind == TokenKind.KEYWORD
-            and prev_prev.text.lower() == "precision"
-        )
-    return False
-
-
-def _type_spec_end(tokens: list[Token]) -> int | None:
-    if not tokens or tokens[0].kind != TokenKind.KEYWORD:
-        return None
-
-    first = tokens[0].text.lower()
-    if first not in _DECL_TYPE_KEYWORDS:
-        return None
-
-    i = 1
-    if first == "double":
-        if (
-            len(tokens) < 2
-            or tokens[1].kind != TokenKind.KEYWORD
-            or tokens[1].text.lower() != "precision"
-        ):
-            return None
-        i = 2
-
-    if i < len(tokens) and tokens[i].kind == TokenKind.LPAREN:
-        next_i = _consume_paren_group(tokens, i)
-        if next_i == i:
-            return None
-        i = next_i
-    elif i < len(tokens) and tokens[i].kind == TokenKind.OP_STAR:
-        next_i = _consume_legacy_type_selector(tokens, i)
-        if next_i is None:
-            return None
-        i = next_i
-
-    return i
-
-
-def _is_attribute_segment(segment: list[Token]) -> bool:
-    if not segment:
-        return False
-    if segment[0].kind not in (TokenKind.KEYWORD, TokenKind.NAME):
-        return False
-    return segment[0].text.lower() in _DECL_ATTRIBUTE_ORDER
-
-
-def _attribute_sort_key(segment: list[Token], original_index: int) -> tuple[int, int]:
-    if segment and segment[0].kind in (TokenKind.KEYWORD, TokenKind.NAME):
-        key = _DECL_ATTRIBUTE_ORDER.get(
-            segment[0].text.lower(), _DECL_ATTRIBUTE_DEFAULT_ORDER
-        )
-        return (key, original_index)
-    return (_DECL_ATTRIBUTE_DEFAULT_ORDER, original_index)
-
-
-def _join_comma_segments(segments: list[list[Token]], anchor: Token) -> list[Token]:
-    out: list[Token] = []
-    for i, segment in enumerate(segments):
-        if i > 0:
-            out.append(_make_token(TokenKind.COMMA, ",", anchor))
-        out.extend(segment)
-    return out
-
-
-def _parse_declaration(tokens: list[Token]) -> _DeclarationParts | None:
-    if not tokens or tokens[0].kind != TokenKind.KEYWORD:
-        return None
-    if tokens[0].text.lower() not in _DECL_TYPE_KEYWORDS:
-        return None
-
-    core = IndentTracker._core_tokens(tokens)
-    if not core or len(core) != len(tokens):
-        return None
-
-    first = core[0].text.lower()
-    if IndentTracker._is_block_opener(first, core):
-        return None
-
-    type_end = _type_spec_end(core)
-    if type_end is None:
-        return None
-
-    anchor = core[0]
-    colon_idx = next(
-        (i for i, tok in enumerate(core) if tok.kind == TokenKind.DOUBLE_COLON), None
-    )
-
-    attributes: list[list[Token]] = []
-    entity_tokens: list[Token] = []
-
-    has_explicit_colon = colon_idx is not None
-
-    if has_explicit_colon:
-        attributes = _split_top_level_commas(core[type_end:colon_idx])
-        entity_tokens = core[colon_idx + 1 :]
-    else:
-        i = type_end
-        entity_start: int | None = None
-
-        while i < len(core):
-            if core[i].kind != TokenKind.COMMA:
-                entity_start = i
-                break
-
-            j = i + 1
-            depth = 0
-            while j < len(core):
-                tok = core[j]
-                if tok.kind in (TokenKind.LPAREN, TokenKind.LBRACKET):
-                    depth += 1
-                elif tok.kind in (TokenKind.RPAREN, TokenKind.RBRACKET):
-                    depth = max(0, depth - 1)
-                elif tok.kind == TokenKind.COMMA and depth == 0:
-                    break
-                j += 1
-
-            segment = core[i + 1 : j]
-            if _is_attribute_segment(segment):
-                attributes.append(segment)
-                i = j
-                continue
-
-            entity_start = i + 1
-            break
-
-        if entity_start is None:
-            return None
-        entity_tokens = core[entity_start:]
-
-    entities = _split_top_level_commas(entity_tokens)
-    if not entities:
-        return None
-    if not has_explicit_colon and entities[0][0].kind != TokenKind.NAME:
-        return None
-
-    indexed_attrs = list(enumerate(attributes))
-    sorted_attrs = [
-        seg
-        for _idx, seg in sorted(
-            indexed_attrs, key=lambda x: _attribute_sort_key(x[1], x[0])
-        )
-    ]
-
-    prefix_tokens = list(core[:type_end])
-    if sorted_attrs:
-        prefix_tokens.append(_make_token(TokenKind.COMMA, ",", anchor))
-        prefix_tokens.extend(_join_comma_segments(sorted_attrs, anchor))
-
-    return _DeclarationParts(
-        prefix_tokens=prefix_tokens,
-        entities=entities,
-        has_attributes=bool(sorted_attrs),
-        anchor=anchor,
-    )
-
-
-def _canonicalise_declaration_tokens(tokens: list[Token]) -> list[Token]:
-    comment: Token | None = None
-    body = tokens
-    if body and body[-1].kind == TokenKind.COMMENT:
-        comment = body[-1]
-        body = body[:-1]
-
-    decl = _parse_declaration(body)
-    if decl is None:
-        return tokens
-
-    canonical = list(decl.prefix_tokens)
-    canonical.append(_make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor))
-    canonical.extend(_join_comma_segments(decl.entities, decl.anchor))
-    if comment is not None:
-        canonical.append(comment)
-    return canonical
-
-
 def _find_top_level_arrow_index(tokens: list[Token]) -> int | None:
     """Return index of top-level ``=>`` token, if present."""
     depth = 0
@@ -1159,7 +119,7 @@ def _try_split_single_entity_pointer_declaration(
     force_trailing_continuation: bool,
 ) -> list[str] | None:
     """Prefer declaration-aware splits for ``... :: lhs => rhs`` declarations."""
-    core = IndentTracker._core_tokens(body)
+    core = _analysis.core_tokens(body)
     if not core or len(core) != len(body):
         return None
     if core[0].text.lower() != "procedure" or core[0].kind not in (
@@ -1174,7 +134,7 @@ def _try_split_single_entity_pointer_declaration(
     if colon_idx is None or colon_idx == len(core) - 1:
         return None
 
-    entities = _split_top_level_commas(core[colon_idx + 1 :])
+    entities = _analysis.split_top_level_commas(core[colon_idx + 1 :])
     if len(entities) != 1:
         return None
 
@@ -1188,9 +148,13 @@ def _try_split_single_entity_pointer_declaration(
     step = cfg.indent_width if continuation_step is None else continuation_step
     fallback_continuation_indent = indent + " " * step
     comment_str = ("  " + comment.text) if comment else ""
-    arrow_tok = _make_token(TokenKind.OP_ARROW, "=>", anchor)
-    header_tokens = prefix_tokens + [_make_token(TokenKind.DOUBLE_COLON, "::", anchor)]
-    continuation_indent = " " * len(indent + _render_tokens(header_tokens) + " ")
+    arrow_tok = _analysis.make_token(TokenKind.OP_ARROW, "=>", anchor)
+    header_tokens = prefix_tokens + [
+        _analysis.make_token(TokenKind.DOUBLE_COLON, "::", anchor)
+    ]
+    continuation_indent = " " * len(
+        indent + _token_render.render_tokens(header_tokens) + " "
+    )
     lhs_tokens = entity[:arrow_idx]
     rhs_tokens = entity[arrow_idx + 1 :]
 
@@ -1207,7 +171,11 @@ def _try_split_single_entity_pointer_declaration(
     # Preferred shape:
     #   procedure, public :: lhs => &
     #      rhs
-    first = indent + _render_tokens(header_tokens + lhs_tokens + [arrow_tok]) + " &"
+    first = (
+        indent
+        + _token_render.render_tokens(header_tokens + lhs_tokens + [arrow_tok])
+        + " &"
+    )
     if len(first) <= cfg.line_length:
         rhs_lines = render_logical_line(
             rhs_tokens,
@@ -1223,9 +191,11 @@ def _try_split_single_entity_pointer_declaration(
     #   procedure, public :: &
     #      lhs => &
     #      rhs
-    header_line = indent + _render_tokens(header_tokens) + " &"
+    header_line = indent + _token_render.render_tokens(header_tokens) + " &"
     lhs_line = (
-        fallback_continuation_indent + _render_tokens(lhs_tokens + [arrow_tok]) + " &"
+        fallback_continuation_indent
+        + _token_render.render_tokens(lhs_tokens + [arrow_tok])
+        + " &"
     )
     if len(header_line) > cfg.line_length or len(lhs_line) > cfg.line_length:
         return None
@@ -1239,7 +209,7 @@ def _try_split_single_entity_pointer_declaration(
 
 
 def _try_wrap_declaration_entity_list(
-    decl: _DeclarationParts,
+    decl: _analysis.DeclarationParts,
     comment: Token | None,
     indent: str,
     cfg: FormatConfig,
@@ -1253,10 +223,12 @@ def _try_wrap_declaration_entity_list(
     comment_str = ("  " + comment.text) if comment else ""
 
     header_tokens = decl.prefix_tokens + [
-        _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
+        _analysis.make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
     ]
-    header = indent + _render_tokens(header_tokens)
-    rendered_entities = [_render_tokens(entity) for entity in decl.entities]
+    header = indent + _token_render.render_tokens(header_tokens)
+    rendered_entities = [
+        _token_render.render_tokens(entity) for entity in decl.entities
+    ]
     first_prefix = header + " "
     continuation_indent = " " * len(first_prefix)
     n = len(rendered_entities)
@@ -1321,7 +293,7 @@ def _try_wrap_declaration_entity_list(
 
 
 def _declaration_entity_comment_suffixes(
-    decl: _DeclarationParts,
+    decl: _analysis.DeclarationParts,
     body: list[Token],
     comment: Token | None,
 ) -> list[str]:
@@ -1380,7 +352,7 @@ def _ends_with_top_level_comma(tokens: list[Token]) -> bool:
 
 
 def _try_wrap_commented_declaration_entity_list(
-    decl: _DeclarationParts,
+    decl: _analysis.DeclarationParts,
     body_with_comments: list[Token],
     comment: Token | None,
     indent: str,
@@ -1402,13 +374,15 @@ def _try_wrap_commented_declaration_entity_list(
         return None
 
     header_tokens = decl.prefix_tokens + [
-        _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
+        _analysis.make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
     ]
-    header = indent + _render_tokens(header_tokens)
+    header = indent + _token_render.render_tokens(header_tokens)
     first_prefix = header + " "
     continuation_indent = " " * len(header + " ")
     trailing_comma_continuation = _ends_with_top_level_comma(body_with_comments)
-    rendered_entities = [_render_tokens(entity) for entity in decl.entities]
+    rendered_entities = [
+        _token_render.render_tokens(entity) for entity in decl.entities
+    ]
     n = len(rendered_entities)
 
     def _build_code_line(prefix: str, start: int, end: int) -> str:
@@ -1474,41 +448,6 @@ def _try_wrap_commented_declaration_entity_list(
 # ---------------------------------------------------------------------------
 
 
-def _render_tokens(tokens: list[Token], compact_named_assign: bool = False) -> str:
-    """Render a token list to a string, inserting spaces via the spacing rules."""
-    parts: list[str] = []
-    prev: Token | None = None
-    prev_prev: Token | None = None
-    depth = 0
-    paren_compact_stack: list[bool] = []
-    compact_depth = 1 if compact_named_assign else 0
-    for idx, tok in enumerate(tokens):
-        if _needs_space_before(
-            prev, tok, depth, prev_prev, compact_named_assign=compact_depth > 0
-        ):
-            parts.append(" ")
-        parts.append(tok.text)
-        if tok.kind == TokenKind.LPAREN:
-            compact = _is_compact_equals_paren_open(tokens, idx)
-            paren_compact_stack.append(compact)
-            if compact:
-                compact_depth += 1
-            depth += 1
-        elif tok.kind == TokenKind.LBRACKET:
-            depth += 1
-        elif tok.kind == TokenKind.RPAREN:
-            if paren_compact_stack:
-                compact = paren_compact_stack.pop()
-                if compact:
-                    compact_depth = max(0, compact_depth - 1)
-            depth = max(0, depth - 1)
-        elif tok.kind == TokenKind.RBRACKET:
-            depth = max(0, depth - 1)
-        prev_prev = prev
-        prev = tok
-    return "".join(parts)
-
-
 def _format_statement_keyword_index(tokens: list[Token]) -> int | None:
     """Return the index of a FORMAT statement keyword after an optional label."""
     non_comment = [tok for tok in tokens if tok.kind != TokenKind.COMMENT]
@@ -1539,7 +478,7 @@ def _render_format_statement(
     if format_idx + 1 >= len(body) or body[format_idx + 1].kind != TokenKind.LPAREN:
         return None
 
-    prefix = _render_tokens(body[: format_idx + 1])
+    prefix = _token_render.render_tokens(body[: format_idx + 1])
     pieces: list[str] = []
     prev: Token | None = None
     for tok in body[format_idx + 1 :]:
@@ -1669,17 +608,6 @@ _ARG_LIST_ANCHOR_KEYWORDS: frozenset[str] = frozenset(
 )
 """Top-level keywords that introduce a call-like callee before ``(``."""
 
-_NON_CALL_PAREN_KEYWORDS: frozenset[str] = frozenset(
-    {
-        "dimension",
-        "codimension",
-        "intent",
-        "kind",
-        "len",
-    }
-)
-"""Keywords whose following parenthesised group is not a call arg-list."""
-
 
 def _arg_list_anchor_start_index(tokens: list[Token], open_idx: int) -> int | None:
     """Return token index that should anchor exploded arg-list indentation.
@@ -1743,7 +671,7 @@ def _arg_list_anchor_indent(tokens: list[Token], open_idx: int, indent: str) -> 
     anchor_idx = _arg_list_anchor_start_index(tokens, open_idx)
     if anchor_idx is None:
         return indent
-    prefix_with_anchor = _render_tokens(tokens[: anchor_idx + 1])
+    prefix_with_anchor = _token_render.render_tokens(tokens[: anchor_idx + 1])
     anchor_col = len(indent) + len(prefix_with_anchor) - len(tokens[anchor_idx].text)
     return " " * anchor_col
 
@@ -1855,7 +783,7 @@ def _is_explodable_arg_list_span(
     if (
         open_idx > 0
         and tokens[open_idx - 1].kind in (TokenKind.KEYWORD, TokenKind.NAME)
-        and tokens[open_idx - 1].text.lower() in _NON_CALL_PAREN_KEYWORDS
+        and tokens[open_idx - 1].text.lower() in _token_render.NON_CALL_PAREN_KEYWORDS
     ):
         return False
 
@@ -1908,7 +836,7 @@ def _is_explodable_arg_list_span(
         prev_tok = tokens[open_idx - 1]
         if (
             prev_tok.kind == TokenKind.KEYWORD
-            and prev_tok.text.lower() in _KEYWORD_SPACE_BEFORE_PAREN
+            and prev_tok.text.lower() in _token_render.KEYWORD_SPACE_BEFORE_PAREN
         ):
             return False
 
@@ -2055,7 +983,9 @@ def _greedy_split_arg(
         if lines
         else [
             first_indent
-            + _render_tokens(arg_toks, compact_named_assign=compact_named_assign)
+            + _token_render.render_tokens(
+                arg_toks, compact_named_assign=compact_named_assign
+            )
             + suffix
         ]
     )
@@ -2106,10 +1036,10 @@ def _try_expand_array_constructor_arg(
     if len(elements) <= 1:
         return None
 
-    prefix = _render_tokens(
+    prefix = _token_render.render_tokens(
         arg_toks[: open_idx + 1], compact_named_assign=compact_named_assign
     )
-    postfix = _render_tokens(
+    postfix = _token_render.render_tokens(
         arg_toks[close_idx:], compact_named_assign=compact_named_assign
     )
     lines: list[str] = []
@@ -2120,10 +1050,12 @@ def _try_expand_array_constructor_arg(
             line = (
                 first_indent
                 + prefix
-                + _render_tokens(elem_toks, compact_named_assign=compact_named_assign)
+                + _token_render.render_tokens(
+                    elem_toks, compact_named_assign=compact_named_assign
+                )
             )
         else:
-            line = cont_indent + _render_tokens(
+            line = cont_indent + _token_render.render_tokens(
                 elem_toks, compact_named_assign=compact_named_assign
             )
 
@@ -2153,7 +1085,7 @@ def _render_prefix(
     for tok in tokens:
         space = (
             " "
-            if _needs_space_before(
+            if _token_render.needs_space_before(
                 prev,
                 tok,
                 depth,
@@ -2192,7 +1124,7 @@ def _collapse_trailing_comments(
     )
     if not text:
         return collapsed_body, None
-    return collapsed_body, _make_token(TokenKind.COMMENT, text, comments[0])
+    return collapsed_body, _analysis.make_token(TokenKind.COMMENT, text, comments[0])
 
 
 def _pick_split_index(
@@ -2205,7 +1137,7 @@ def _pick_split_index(
 
     Preference:
       1. top-level commas,
-      2. top-level assignment (`=`),
+      2. top-level assignment (`=`), unless the RHS has a viable operator split,
       3. boundary before binary `+`/`-`,
       4. boundary before `*`,
       5. other low-precedence operators.
@@ -2264,7 +1196,7 @@ def _pick_split_index(
     for idx, tok in enumerate(tokens):
         space = (
             " "
-            if _needs_space_before(
+            if _token_render.needs_space_before(
                 prev,
                 tok,
                 depth,
@@ -2381,6 +1313,16 @@ def _pick_split_index(
                     post = [b for b in group if b > protected_end]
                     filtered.append(post if post else group)
                 priorities = filtered
+
+            if priorities[1]:
+                rhs_operator_splits = [
+                    boundary
+                    for group in priorities[2:]
+                    for boundary in group
+                    if any(assignment < boundary for assignment in priorities[1])
+                ]
+                if rhs_operator_splits:
+                    priorities[1] = []
 
             best = next((p for p in priorities if p), None)
             if best:
@@ -2622,12 +1564,19 @@ def _try_expand_arg_list(
     # Prefer placing the first argument on the opening line (``foo(arg1, &``)
     # and, when possible, the closing ``)`` (plus suffix like ``result(r)``)
     # on the final argument line.
-    prefix_with_open = _render_tokens(code_body[: open_idx + 1])
+    prefix_with_open = _token_render.render_tokens(code_body[: open_idx + 1])
     close_tail_tokens = code_body[close_idx + 1 :]
-    close_piece = _render_tokens([code_body[close_idx]] + close_tail_tokens)
-    close_paren_piece = _render_tokens([code_body[close_idx]])
+    close_piece = _token_render.render_tokens(
+        [code_body[close_idx]] + close_tail_tokens
+    )
+    close_paren_piece = _token_render.render_tokens([code_body[close_idx]])
     procedure_header_with_tail = _is_procedure_header_arg_list(
         code_body, open_idx, close_tail_tokens
+    )
+    procedure_header_with_bind_tail = (
+        procedure_header_with_tail
+        and close_tail_tokens
+        and close_tail_tokens[0].text.lower() == "bind"
     )
     can_hang_open = len(arg_groups) >= 2
     first_arg_column_indent = " " * (len(indent) + len(prefix_with_open))
@@ -2639,7 +1588,8 @@ def _try_expand_arg_list(
     if can_hang_open:
         first_suffix = ","
         first_inline = (
-            _render_tokens(arg_groups[0], compact_named_assign=True) + first_suffix
+            _token_render.render_tokens(arg_groups[0], compact_named_assign=True)
+            + first_suffix
         )
         first_line = content_lines[0] + first_inline
         first_comment = content_comments[0] + _comment_suffix(arg_comments[0])
@@ -2660,7 +1610,7 @@ def _try_expand_arg_list(
         is_last = i == len(arg_groups) - 1
         suffix = "" if is_last else ","
 
-        single_line = continuation_indent + _render_tokens(
+        single_line = continuation_indent + _token_render.render_tokens(
             arg_toks, compact_named_assign=True
         )
         arg_comment_suffix = _comment_suffix(arg_comments[i])
@@ -2734,12 +1684,18 @@ def _try_expand_arg_list(
         )
         inline_candidate = content_lines[-1] + close_piece
         inline_comment = content_comments[-1] + close_comment_suffix
-        if len(inline_candidate) + len(inline_comment) <= cfg.line_length:
+        inline_paren_candidate = content_lines[-1] + close_paren_piece
+        if procedure_header_with_bind_tail and (
+            len(inline_paren_candidate) + len(content_comments[-1]) + 2
+            <= cfg.line_length
+        ):
+            content_lines[-1] = inline_paren_candidate
+            tail_after_inline_close = True
+        elif len(inline_candidate) + len(inline_comment) <= cfg.line_length:
             inline_close = True
             content_lines[-1] = inline_candidate
             content_comments[-1] = inline_comment
         elif procedure_header_with_tail:
-            inline_paren_candidate = content_lines[-1] + close_paren_piece
             if (
                 len(inline_paren_candidate) + len(content_comments[-1]) + 2
                 <= cfg.line_length
@@ -2773,7 +1729,9 @@ def _try_expand_arg_list(
         if close_comment_texts and close_comment_anchor is not None:
             close_comment_text = "  ".join(close_comment_texts)
             tail_tokens = tail_tokens + [
-                _make_token(TokenKind.COMMENT, close_comment_text, close_comment_anchor)
+                _analysis.make_token(
+                    TokenKind.COMMENT, close_comment_text, close_comment_anchor
+                )
             ]
         tail_indent = indent + " " * cfg.indent_width
         lines.extend(render_logical_line(tail_tokens, tail_indent, cfg))
@@ -2786,7 +1744,9 @@ def _try_expand_arg_list(
     if close_comment_texts and close_comment_anchor is not None:
         close_comment_text = "  ".join(close_comment_texts)
         close_tokens.append(
-            _make_token(TokenKind.COMMENT, close_comment_text, close_comment_anchor)
+            _analysis.make_token(
+                TokenKind.COMMENT, close_comment_text, close_comment_anchor
+            )
         )
     lines.extend(render_logical_line(close_tokens, close_indent, cfg))
 
@@ -2852,7 +1812,7 @@ def _arg_list_explosion_needs_greedy_split(
         suffix = "" if is_last else ","
         single_line = (
             continuation_indent
-            + _render_tokens(arg_toks, compact_named_assign=True)
+            + _token_render.render_tokens(arg_toks, compact_named_assign=True)
             + suffix
         )
 
@@ -2918,13 +1878,13 @@ def _try_split_assignment_before_rhs_explosion(
     step = cfg.indent_width if continuation_step is None else continuation_step
     continuation_indent = indent + " " * step
     lhs_tokens = body[: assignment_idx + 1]
-    lhs_line = indent + _render_tokens(lhs_tokens) + " &"
+    lhs_line = indent + _token_render.render_tokens(lhs_tokens) + " &"
     if len(lhs_line) > cfg.line_length:
         return None
 
     # If ``lhs = rhs_call(`` already fits, only force assignment splitting when
     # RHS explosion would otherwise split inside arguments.
-    rhs_open_line = indent + _render_tokens(body[: open_idx + 1]) + " &"
+    rhs_open_line = indent + _token_render.render_tokens(body[: open_idx + 1]) + " &"
     if len(
         rhs_open_line
     ) <= cfg.line_length and not _arg_list_explosion_needs_greedy_split(
@@ -2959,7 +1919,7 @@ def _condition_continuation_indent(
         return default_indent
 
     first_word = first.text.lower()
-    starts_condition = first_word in _KEYWORD_SPACE_BEFORE_PAREN
+    starts_condition = first_word in _token_render.KEYWORD_SPACE_BEFORE_PAREN
     # Handle `else if (...)` where the condition starts after the branch keyword.
     if (
         not starts_condition
@@ -2983,7 +1943,7 @@ def _condition_continuation_indent(
 
     for i, tok in enumerate(body):
         if tok.kind == TokenKind.LPAREN:
-            return indent + " " * len(_render_tokens(body[: i + 1]))
+            return indent + " " * len(_token_render.render_tokens(body[: i + 1]))
     return default_indent
 
 
@@ -3040,7 +2000,7 @@ def _assignment_rhs_chain_continuation_indent(
         return default_indent
 
     # Align to first RHS token after "lhs = ".
-    rhs_prefix = _render_tokens(body[: assignment_idx + 1])
+    rhs_prefix = _token_render.render_tokens(body[: assignment_idx + 1])
     return indent + " " * (len(rhs_prefix) + 1)
 
 
@@ -3095,13 +2055,13 @@ def render_logical_line(
         return [format_statement]
 
     # Build the token string with spacing
-    line_body = _render_tokens(body)
+    line_body = _token_render.render_tokens(body)
     comment_str = ("  " + comment.text) if comment else ""
     trailing = " &" if force_trailing_continuation else ""
     code_line = indent + line_body + trailing
     full_line = code_line + comment_str
 
-    decl = _parse_declaration(body)
+    decl = _analysis.parse_declaration(body)
     if len(code_line) > cfg.line_length:
         pointer_decl = _try_split_single_entity_pointer_declaration(
             body,
@@ -3140,16 +2100,18 @@ def render_logical_line(
                 return wrapped_decl
 
             header_tokens = decl.prefix_tokens + [
-                _make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
+                _analysis.make_token(TokenKind.DOUBLE_COLON, "::", decl.anchor)
             ]
-            header = indent + _render_tokens(header_tokens)
+            header = indent + _token_render.render_tokens(header_tokens)
             continuation_indent = " " * len(header + " ")
             lines = [header + " &"]
 
             for i, entity in enumerate(decl.entities):
                 is_last = i == len(decl.entities) - 1
                 suffix = "" if is_last else ","
-                entity_line = continuation_indent + _render_tokens(entity) + suffix
+                entity_line = (
+                    continuation_indent + _token_render.render_tokens(entity) + suffix
+                )
                 if is_last:
                     if force_trailing_continuation:
                         entity_line += " &"
@@ -3290,64 +2252,6 @@ def render_logical_line(
 
 
 # ---------------------------------------------------------------------------
-# Multi-token normalisation
-# ---------------------------------------------------------------------------
-
-# Keywords that can follow `end` to form a compound end-keyword
-_END_CONTINUATIONS: frozenset[str] = frozenset(
-    {
-        "if",
-        "do",
-        "function",
-        "subroutine",
-        "module",
-        "program",
-        "where",
-        "select",
-        "interface",
-        "type",
-        "associate",
-        "block",
-        "critical",
-        "team",
-        "forall",
-        "enum",
-    }
-)
-
-
-def merge_end_keywords(tokens: list[Token], cfg: FormatConfig) -> list[Token]:
-    """Merge adjacent `end` + `<keyword>` pairs into compact form when configured.
-
-    This is needed for compact mode because spaced forms (`end if`) are two
-    separate tokens in the stream.
-    """
-    if cfg.end_keyword_form != "compact":
-        return tokens
-
-    result: list[Token] = []
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if (
-            tok.kind == TokenKind.KEYWORD
-            and tok.text.lower() == "end"
-            and i + 1 < len(tokens)
-            and tokens[i + 1].kind == TokenKind.KEYWORD
-            and tokens[i + 1].text.lower() in _END_CONTINUATIONS
-        ):
-            merged_text = "end" + tokens[i + 1].text.lower()
-            if cfg.keyword_case == "upper":
-                merged_text = merged_text.upper()
-            result.append(Token(TokenKind.KEYWORD, merged_text, tok.line, tok.col))
-            i += 2
-        else:
-            result.append(tok)
-            i += 1
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Single-line if splitting
 # ---------------------------------------------------------------------------
 
@@ -3413,46 +2317,6 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
     raw_lines = source.splitlines()
     tracker = IndentTracker(cfg.indent_width)
     output_lines: list[str] = []
-
-    # Normalise token-level rules. Keep this inline in the hot path: formatting
-    # large trees visits every token exactly once here.
-    keyword_upper = cfg.keyword_case == "upper"
-
-    def normalise_line(line_tokens: list[Token]) -> list[Token]:
-        normalised: list[Token] = []
-        for tok in line_tokens:
-            kind = tok.kind
-            text = tok.text
-
-            if kind == TokenKind.KEYWORD:
-                if cfg.normalize_keyword_case:
-                    text = text.upper() if keyword_upper else text.lower()
-                if cfg.normalize_end_keywords:
-                    lower = text.lower()
-                    if cfg.end_keyword_form == "spaced" and lower in _COMPACT_TO_SPACED:
-                        text = _COMPACT_TO_SPACED[lower]
-                        if keyword_upper:
-                            text = text.upper()
-                    elif (
-                        cfg.end_keyword_form == "compact"
-                        and lower in _SPACED_TO_COMPACT
-                    ):
-                        text = _SPACED_TO_COMPACT[lower]
-                        if keyword_upper:
-                            text = text.upper()
-            elif kind == TokenKind.LOGICAL:
-                text = text.lower()
-            elif cfg.normalize_operators:
-                replacement = _OLD_TO_NEW_OP.get(text.lower())
-                if replacement is not None:
-                    kind = _NEW_OP_TO_KIND[replacement]
-                    text = replacement
-
-            if kind is tok.kind and text == tok.text:
-                normalised.append(tok)
-            else:
-                normalised.append(Token(kind, text, tok.line, tok.col))
-        return normalised
 
     # Buffer for comment/blank lines awaiting the indentation of the next code line.
     # None entries represent blank lines; str entries are raw comment texts.
@@ -3535,7 +2399,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
             body = body[1:]
         body = [tok for tok in body if tok.kind != TokenKind.CONTINUATION]
 
-        line_body = _render_tokens(body)
+        line_body = _token_render.render_tokens(body)
         comment_str = ("  " + comment.text) if comment else ""
         trailing = " &" if force_trailing_continuation else ""
         full_line = current_indent + line_body + trailing + comment_str
@@ -3573,7 +2437,7 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
         if not body:
             return False
 
-        line_text = current_indent + _render_tokens(body)
+        line_text = current_indent + _token_render.render_tokens(body)
         if len(line_text) <= cfg.line_length:
             return False
 
@@ -3611,9 +2475,9 @@ def format_source(source: str, cfg: FormatConfig | None = None) -> str:
 
         if cfg.normalize_end_keywords:
             logical_line = merge_end_keywords(logical_line, cfg)
-        normalised = normalise_line(logical_line)
+        normalised = normalise_line(logical_line, cfg)
         if cfg.canonicalize_declarations:
-            normalised = _canonicalise_declaration_tokens(normalised)
+            normalised = _analysis.canonicalise_declaration_tokens(normalised)
 
         first_raw = raw_span[0] if raw_span else ""
         control_match = _FORMAT_CONTROL_RE.match(first_raw)
